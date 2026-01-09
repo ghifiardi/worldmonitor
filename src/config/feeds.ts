@@ -23,6 +23,16 @@ export const SOURCE_TIERS: Record<string, number> = {
   'MarketWatch': 2,
   'Al Jazeera': 2,
 
+  // Tier 1.5 - Official Government Sources
+  'White House': 1,
+  'State Dept': 1,
+  'Pentagon': 1,
+  'Treasury': 2,
+  'DOJ': 2,
+  'DHS': 2,
+  'CDC': 2,
+  'FEMA': 2,
+
   // Tier 3 - Specialty
   'Defense One': 3,
   'Breaking Defense': 3,
@@ -82,9 +92,16 @@ export const FEEDS: Record<string, Feed[]> = {
     { name: 'Yahoo Finance', url: '/rss/yahoonews/news/rssindex' },
   ],
   gov: [
+    { name: 'White House', url: '/rss/whitehouse/briefing-room/feed/' },
+    { name: 'State Dept', url: '/rss/state/rss/feeds/documents/latest_news' },
+    { name: 'Pentagon', url: '/rss/defense/DesktopModules/ArticleCS/RSS.ashx?ContentType=1&Site=945&max=10' },
+    { name: 'Treasury', url: '/rss/treasury/press-center/news/pages/rss@xmlnewsbydate.aspx' },
+    { name: 'DOJ', url: '/rss/justice/feeds/opa/justicenews.xml' },
     { name: 'Federal Reserve', url: '/rss/fedreserve/feeds/press_all.xml' },
     { name: 'SEC', url: '/rss/sec/news/pressreleases.rss' },
-    { name: 'Gov News', url: '/rss/googlenews/rss/search?q=US+government+policy+congress&hl=en-US&gl=US&ceid=US:en' },
+    { name: 'CDC', url: '/rss/cdc/rss/search.ashx?Search=&Channel=CDC_Media' },
+    { name: 'FEMA', url: '/rss/fema/api/v2/news?format=rss' },
+    { name: 'DHS', url: '/rss/dhs/news/rss/all' },
   ],
   layoffs: [
     { name: 'TechCrunch Layoffs', url: '/rss/techcrunch/tag/layoffs/feed/' },

@@ -187,6 +187,36 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/rss\/statedept/, ''),
       },
+      '/rss/state': {
+        target: 'https://www.state.gov',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/rss\/state/, ''),
+      },
+      '/rss/defense': {
+        target: 'https://www.defense.gov',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/rss\/defense/, ''),
+      },
+      '/rss/justice': {
+        target: 'https://www.justice.gov',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/rss\/justice/, ''),
+      },
+      '/rss/cdc': {
+        target: 'https://tools.cdc.gov',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/rss\/cdc/, ''),
+      },
+      '/rss/fema': {
+        target: 'https://www.fema.gov',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/rss\/fema/, ''),
+      },
+      '/rss/dhs': {
+        target: 'https://www.dhs.gov',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/rss\/dhs/, ''),
+      },
       '/rss/fedreserve': {
         target: 'https://www.federalreserve.gov',
         changeOrigin: true,
