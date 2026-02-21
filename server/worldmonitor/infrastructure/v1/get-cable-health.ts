@@ -17,6 +17,9 @@ import { UPSTREAM_TIMEOUT_MS } from './_shared';
 const CACHE_KEY = 'cable-health-v1';
 const CACHE_TTL = 180; // 3 minutes
 
+// In-memory fallback: serves stale data when both Redis and NGA are down
+let fallbackCache: GetCableHealthResponse | null = null;
+
 // ========================================================================
 // NGA warning types
 // ========================================================================
@@ -159,22 +162,26 @@ export function matchCableByName(text: string): string | null {
   return null;
 }
 
-export function findNearestCable(lat: number, lon: number): { cableId: string; distanceDeg: number } | null {
+export function findNearestCable(lat: number, lon: number): { cableId: string; distanceKm: number } | null {
   let bestId: string | null = null;
   let bestDist = Infinity;
-  const MAX_DIST_DEG = 5;
+  const MAX_DIST_KM = 555; // ~5 degrees at equator
+
+  const cosLat = Math.cos(lat * Math.PI / 180);
 
   for (const [cableId, landings] of Object.entries(CABLE_LANDINGS)) {
     for (const [lLat, lLon] of landings) {
-      const dist = Math.sqrt((lat - lLat) ** 2 + (lon - lLon) ** 2);
-      if (dist < bestDist && dist < MAX_DIST_DEG) {
-        bestDist = dist;
+      const dLat = (lat - lLat) * 111;
+      const dLon = (lon - lLon) * 111 * cosLat;
+      const distKm = Math.sqrt(dLat ** 2 + dLon ** 2);
+      if (distKm < bestDist && distKm < MAX_DIST_KM) {
+        bestDist = distKm;
         bestId = cableId;
       }
     }
   }
 
-  return bestId ? { cableId: bestId, distanceDeg: bestDist } : null;
+  return bestId ? { cableId: bestId, distanceKm: bestDist } : null;
 }
 
 const MONTH_MAP: Record<string, number> = {
@@ -223,7 +230,7 @@ export function processNgaSignals(warnings: NgaWarning[]): Signal[] {
       if (nearest) {
         cableId = nearest.cableId;
         joinMethod = 'geometry';
-        distanceKm = Math.round(nearest.distanceDeg * 111);
+        distanceKm = Math.round(nearest.distanceKm);
       }
     }
 
@@ -252,7 +259,7 @@ export function processNgaSignals(warnings: NgaWarning[]): Signal[] {
         severity: 0.6,
         confidence: joinMethod === 'name' ? 0.8 : Math.max(0.3, 0.7 - distanceKm / 500),
         ttlSeconds: 3 * 86400,
-        kind: 'operator_fault',
+        kind: 'cable_advisory',
         evidence: [{ source: 'NGA', summary: `Cable advisory: ${summaryText}`, ts }],
       });
     }
@@ -364,7 +371,10 @@ export async function getCableHealth(
 ): Promise<GetCableHealthResponse> {
   try {
     const cached = (await getCachedJson(CACHE_KEY)) as GetCableHealthResponse | null;
-    if (cached) return cached;
+    if (cached) {
+      fallbackCache = cached;
+      return cached;
+    }
 
     const ngaData = await fetchNgaWarnings();
     const signals = processNgaSignals(ngaData);
@@ -375,10 +385,12 @@ export async function getCableHealth(
       cables,
     };
 
+    fallbackCache = result;
     await setCachedJson(CACHE_KEY, result, CACHE_TTL).catch(() => {});
 
     return result;
   } catch {
+    if (fallbackCache) return fallbackCache;
     return { generatedAt: Date.now(), cables: {} };
   }
 }

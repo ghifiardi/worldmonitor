@@ -3187,8 +3187,7 @@ export class App {
           await this.loadAisSignals();
           break;
         case 'cables':
-          await this.loadCableActivity();
-          await this.loadCableHealth();
+          await Promise.all([this.loadCableActivity(), this.loadCableHealth()]);
           break;
         case 'protests':
           await this.loadProtests();

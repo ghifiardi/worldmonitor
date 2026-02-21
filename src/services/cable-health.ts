@@ -59,12 +59,6 @@ export async function fetchCableHealth(): Promise<CableHealthResponse> {
     cables,
   };
 
-  const faultCount = Object.values(cables).filter((c) => c.status === 'fault').length;
-  const degradedCount = Object.values(cables).filter((c) => c.status === 'degraded').length;
-  if (faultCount + degradedCount > 0) {
-    console.log(`[CableHealth] ${faultCount} faults, ${degradedCount} degraded`);
-  }
-
   cachedResponse = result;
   cacheExpiry = now + LOCAL_CACHE_MS;
 
