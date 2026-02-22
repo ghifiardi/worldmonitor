@@ -100,6 +100,7 @@ import { installRuntimeFetchPatch } from '@/services/runtime';
 import { loadDesktopSecrets } from '@/services/runtime-config';
 import { initAnalytics, trackApiKeysSnapshot } from '@/services/analytics';
 import { applyStoredTheme } from '@/utils/theme-manager';
+import { SITE_VARIANT } from '@/config/variant';
 import { clearChunkReloadGuard, installChunkReloadGuard } from '@/bootstrap/chunk-reload';
 
 // Auto-reload on stale chunk 404s after deployment (Vite fires this for modulepreload failures).
@@ -123,6 +124,12 @@ loadDesktopSecrets().then(async () => {
 
 // Apply stored theme preference before app initialization (safety net for inline script)
 applyStoredTheme();
+
+// Set data-variant on <html> so CSS theme overrides activate (inline script handles hostname/localStorage,
+// this catches the VITE_VARIANT env var path used during local dev and Vercel deployments)
+if (SITE_VARIANT && SITE_VARIANT !== 'full') {
+  document.documentElement.dataset.variant = SITE_VARIANT;
+}
 
 // Remove no-transition class after first paint to enable smooth theme transitions
 requestAnimationFrame(() => {

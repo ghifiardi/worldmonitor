@@ -180,6 +180,14 @@ function htmlVariantPlugin(): Plugin {
         );
       }
 
+      // Inject build-time variant into the inline script so data-variant is set before CSS loads
+      if (activeVariant !== 'full') {
+        result = result.replace(
+          /if\(v\)document\.documentElement\.dataset\.variant=v;/,
+          `if(!v)v='${activeVariant}';if(v)document.documentElement.dataset.variant=v;`
+        );
+      }
+
       // Favicon variant paths — replace /favico/ paths with variant-specific subdirectory
       if (activeVariant !== 'full') {
         result = result
