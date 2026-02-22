@@ -177,3 +177,182 @@
   --green: #8BAF7A;
   --yellow: #D4B36A;
 }
+
+/* ==========================================================
+   Happy Panel Chrome — Rounded, Warm, Welcoming
+   ========================================================== */
+
+/* ---------- Panel border-radius & shadow (light) ---------- */
+[data-variant="happy"] .panel {
+  border-radius: var(--panel-radius, 14px);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(80, 70, 50, 0.06), 0 1px 2px rgba(80, 70, 50, 0.04);
+}
+
+[data-variant="happy"] .panel-header {
+  border-radius: var(--panel-radius, 14px) var(--panel-radius, 14px) 0 0;
+}
+
+/* ---------- Panel shadow (dark mode) ---------- */
+[data-variant="happy"][data-theme="dark"] .panel {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.20), 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+/* ---------- Panel title — softer casing ---------- */
+[data-variant="happy"] .panel-title {
+  text-transform: none;
+  letter-spacing: 0.3px;
+  font-weight: 700;
+}
+
+/* ---------- Panel count badge — rounded pill ---------- */
+[data-variant="happy"] .panel-count {
+  border-radius: 10px;
+  padding: 2px 8px;
+}
+
+/* ---------- Panel resize handle — softer ---------- */
+[data-variant="happy"] .panel-resize-handle {
+  background: linear-gradient(to top, rgba(107, 143, 94, 0.10), transparent);
+}
+
+/* ---------- Map section — rounded ---------- */
+[data-variant="happy"] .map-section {
+  border-radius: var(--panel-radius, 14px);
+  overflow: hidden;
+}
+
+/* ---------- Map controls — rounded ---------- */
+[data-variant="happy"] .map-controls {
+  gap: 6px;
+}
+
+[data-variant="happy"] .map-control-btn {
+  border-radius: 8px;
+}
+
+/* ==========================================================
+   Happy Empty States — Friendly nature-themed illustration
+   ========================================================== */
+[data-variant="happy"] .panel-empty,
+[data-variant="happy"] .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+  text-align: center;
+  color: var(--text-dim);
+  gap: 12px;
+  font-size: 13px;
+}
+
+[data-variant="happy"] .panel-empty::before,
+[data-variant="happy"] .empty-state::before {
+  content: '';
+  display: block;
+  width: 48px;
+  height: 48px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48' fill='none'%3E%3Cpath d='M24 40V24M24 24C20 20 14 18 8 20C14 14 20 14 24 18C28 14 34 14 40 20C34 18 28 20 24 24Z' stroke='%236B8F5E' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M18 38C18 38 20 34 24 34C28 34 30 38 30 38' stroke='%236B8F5E' stroke-width='1.5' stroke-linecap='round' opacity='0.4'/%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  opacity: 0.6;
+}
+
+/* ==========================================================
+   Happy Loading States — Gentle pulse instead of radar sweep
+   ========================================================== */
+
+/* Hide the military radar sweep animation */
+[data-variant="happy"] .panel-loading-radar {
+  border-color: rgba(107, 143, 94, 0.25);
+}
+
+[data-variant="happy"] .panel-radar-sweep {
+  background: linear-gradient(90deg, transparent, var(--status-live));
+  animation: happy-radar-sweep 3s linear infinite;
+}
+
+@keyframes happy-radar-sweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+[data-variant="happy"] .panel-radar-dot {
+  background: var(--status-live);
+  box-shadow: 0 0 12px var(--status-live);
+  animation: happy-pulse 2s ease-in-out infinite;
+}
+
+/* Gentle pulse for status dots */
+[data-variant="happy"] .status-dot {
+  animation: happy-pulse 2.5s ease-in-out infinite;
+}
+
+@keyframes happy-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.08); }
+}
+
+/* Loading text — friendly tone */
+[data-variant="happy"] .panel-loading-text {
+  letter-spacing: 0.2px;
+}
+
+/* ==========================================================
+   Happy Panel Error State — Softer error display
+   ========================================================== */
+[data-variant="happy"] .panel-header-error {
+  background: rgba(196, 163, 90, 0.12);
+  border-bottom-color: rgba(196, 163, 90, 0.30);
+}
+
+/* ==========================================================
+   Happy Download Banner — Rounded and warm
+   ========================================================== */
+[data-variant="happy"] .wm-dl-panel {
+  border-radius: 0 0 0 14px;
+  border-left-color: var(--green);
+}
+
+/* ==========================================================
+   Happy Data Badges — Rounded pills
+   ========================================================== */
+[data-variant="happy"] .panel-data-badge {
+  border-radius: 10px;
+}
+
+/* ==========================================================
+   Happy Tab Styles — Rounded tabs
+   ========================================================== */
+[data-variant="happy"] .disp-tab,
+[data-variant="happy"] .ucdp-tab {
+  border-radius: 8px;
+}
+
+[data-variant="happy"] .disp-tab-active,
+[data-variant="happy"] .ucdp-tab-active {
+  background: color-mix(in srgb, var(--semantic-high) 12%, transparent);
+  border-color: var(--semantic-high);
+  color: var(--semantic-high);
+}
+
+/* ==========================================================
+   Happy Severity Badges — Warm tones
+   ========================================================== */
+[data-variant="happy"] .severity-extreme {
+  background: color-mix(in srgb, var(--semantic-critical) 15%, transparent);
+  color: var(--semantic-critical);
+}
+
+[data-variant="happy"] .severity-moderate {
+  background: color-mix(in srgb, var(--semantic-high) 12%, transparent);
+  color: var(--semantic-high);
+}
+
+/* ==========================================================
+   Happy Posture Radar — Softer animation
+   ========================================================== */
+[data-variant="happy"] .posture-radar-sweep {
+  animation: happy-radar-sweep 3s linear infinite;
+}
