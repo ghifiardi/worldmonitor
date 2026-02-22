@@ -151,6 +151,7 @@ See [API Dependencies](docs/DOCUMENTATION.md#api-dependencies) for the full list
 ### PR Title Convention
 
 Use a descriptive title that summarizes the change:
+
 - `feat: add earthquake magnitude filtering to map layer`
 - `fix: resolve RSS feed timeout for Al Jazeera`
 - `docs: update API dependencies section`
