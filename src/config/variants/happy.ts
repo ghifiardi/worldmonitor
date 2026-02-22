@@ -1,15 +1,9 @@
 // Happy variant - happy.worldmonitor.app
-import type { PanelConfig, MapLayers, Feed } from '@/types';
+import type { PanelConfig, MapLayers } from '@/types';
 import type { VariantConfig } from './base';
 
 // Re-export base config
 export * from './base';
-
-// Happy-specific feeds (placeholder for Phase 2)
-export const FEEDS: Record<string, Feed[]> = {
-  // Placeholder categories — feeds will be populated in Phase 2
-  positive: [],
-};
 
 // Panel configuration for happy/positive news dashboard
 export const DEFAULT_PANELS: Record<string, PanelConfig> = {
