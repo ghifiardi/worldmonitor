@@ -71,7 +71,7 @@ const TECH_LIVE_CHANNELS: LiveChannel[] = [
   { id: 'nasa', name: 'NASA TV', handle: '@NASA', fallbackVideoId: 'fO9e9jnhYK8', useFallbackOnly: true },
 ];
 
-const LIVE_CHANNELS = SITE_VARIANT === 'tech' ? TECH_LIVE_CHANNELS : FULL_LIVE_CHANNELS;
+const LIVE_CHANNELS: LiveChannel[] = SITE_VARIANT === 'tech' ? TECH_LIVE_CHANNELS : SITE_VARIANT === 'happy' ? [] : FULL_LIVE_CHANNELS;
 
 export class LiveNewsPanel extends Panel {
   private static apiPromise: Promise<void> | null = null;
