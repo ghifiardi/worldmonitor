@@ -5,22 +5,22 @@
 See: .planning/PROJECT.md (updated 2026-02-22)
 
 **Core value:** Every piece of content on the dashboard makes the viewer feel genuinely better about humanity
-**Current focus:** Phase 4 complete - Global Map & Positive Events (3/3 plans done)
+**Current focus:** Phase 5 - Humanity Data Panels (1/3 plans done)
 
 ## Current Position
 
-Phase: 4 of 9 (Global Map & Positive Events)
-Plan: 3 of 3 in current phase (04-03 complete)
-Status: Phase Complete
-Last activity: 2026-02-23 -- Completed 04-03-PLAN.md (Kindness Data Pipeline & Map Layer)
+Phase: 5 of 9 (Humanity Data Panels)
+Plan: 1 of 3 in current phase (05-01 complete)
+Status: In Progress
+Last activity: 2026-02-23 -- Completed 05-01-PLAN.md (Ticking Counters Service & Panel)
 
-Progress: [##########] 100%
+Progress: [###-------] 33%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 12
-- Average duration: 13 min
+- Total plans completed: 13
+- Average duration: 12 min
 - Total execution time: 2.7 hours
 
 **By Phase:**
@@ -31,15 +31,17 @@ Progress: [##########] 100%
 | 02 | 3 | 7 min | 2 min |
 | 03 | 3 | 9 min | 3 min |
 | 04 | 3 | 19 min | 6 min |
+| 05 | 1 | 2 min | 2 min |
 
 **Recent Trend:**
-- Last 5 plans: 3m, 3m, 4m, 9m, 6m
-- Trend: Phase 4 complete -- all 3 plans done
+- Last 5 plans: 3m, 4m, 9m, 6m, 2m
+- Trend: Phase 5 started -- plan 01 done in 2m
 
 *Updated after each plan completion*
 | Phase 04 P01 | 4 | 2 tasks | 9 files |
 | Phase 04 P02 | 9 | 2 tasks | 14 files |
 | Phase 04 P03 | 6 | 2 tasks | 4 files |
+| Phase 05 P01 | 2 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -87,6 +89,9 @@ Recent decisions affecting current work:
 - [04-03]: Baseline kindness points use Math.random() jitter (not seeded) -- regenerates every refresh cycle for "alive" feeling.
 - [04-03]: Real kindness events pulse at 600ms period (slower than positive events' 500ms) for gentler, calming feel.
 - [04-03]: MapContainer.setKindnessData delegates to DeckGLMap only (SVG map does not support kindness layer).
+- [05-01]: Counter values use absolute-time calculation (seconds since midnight UTC * rate) not delta accumulation, preventing drift across tabs/throttling.
+- [05-01]: startTicking() called in constructor for immediate animation start; no separate init step needed.
+- [05-01]: Emoji icons encoded as Unicode escapes in TS source for cross-platform safety.
 
 ### Pending Todos
 
@@ -101,5 +106,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-23
-Stopped at: Completed 04-03-PLAN.md (Kindness Data Pipeline & Map Layer) -- Phase 04 complete
-Resume file: .planning/phases/04-global-map-positive-events/04-03-SUMMARY.md
+Stopped at: Completed 05-01-PLAN.md (Ticking Counters Service & Panel)
+Resume file: .planning/phases/05-humanity-data-panels/05-01-SUMMARY.md

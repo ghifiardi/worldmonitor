@@ -46,9 +46,9 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Live Humanity Counters Panel
 
-- [ ] **COUNT-01**: Worldometer-style ticking counters for positive metrics: babies born today, trees planted, vaccines administered, students graduated, books published, renewable MW installed
-- [ ] **COUNT-02**: Per-second rate calculation from latest annual UN/WHO/World Bank data (no live API needed)
-- [ ] **COUNT-03**: Smooth animated number transitions (always-moving, hypnotic feel)
+- [x] **COUNT-01**: Worldometer-style ticking counters for positive metrics: babies born today, trees planted, vaccines administered, students graduated, books published, renewable MW installed
+- [x] **COUNT-02**: Per-second rate calculation from latest annual UN/WHO/World Bank data (no live API needed)
+- [x] **COUNT-03**: Smooth animated number transitions (always-moving, hypnotic feel)
 
 ### Humanity Progress Charts Panel
 
@@ -154,9 +154,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | MAP-03 | Phase 8 | Pending |
 | MAP-04 | Phase 8 | Pending |
 | MAP-05 | Phase 8 | Pending |
-| COUNT-01 | Phase 5 | Pending |
-| COUNT-02 | Phase 5 | Pending |
-| COUNT-03 | Phase 5 | Pending |
+| COUNT-01 | Phase 5 | Complete |
+| COUNT-02 | Phase 5 | Complete |
+| COUNT-03 | Phase 5 | Complete |
 | PROG-01 | Phase 5 | Pending |
 | PROG-02 | Phase 5 | Pending |
 | PROG-03 | Phase 5 | Pending |
