@@ -1105,6 +1105,43 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------- EIA Installed Capacity Chart ---------- */
+[data-variant='happy'] .capacity-section {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+[data-variant='happy'] .capacity-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+[data-variant='happy'] .capacity-legend {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+[data-variant='happy'] .capacity-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+[data-variant='happy'] .capacity-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 /* ==========================================================
    Phase 7 — Dark Mode Overrides
    ========================================================== */

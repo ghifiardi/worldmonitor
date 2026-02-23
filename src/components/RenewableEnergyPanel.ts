@@ -8,7 +8,7 @@
 
 import { Panel } from './Panel';
 import * as d3 from 'd3';
-import type { RenewableEnergyData, RegionRenewableData } from '@/services/renewable-energy-data';
+import type { RenewableEnergyData, RegionRenewableData, CapacitySeries } from '@/services/renewable-energy-data';
 import { getCSSColor } from '@/utils';
 import { replaceChildren } from '@/utils/dom-utils';
 
@@ -303,6 +303,209 @@ export class RenewableEnergyPanel extends Panel {
       row.appendChild(valueSpan);
       container.appendChild(row);
     }
+  }
+
+  /**
+   * Set EIA installed capacity data and render a compact D3 stacked area chart
+   * (solar + wind growth, coal decline) below the existing gauge/sparkline/regions.
+   *
+   * Appends to existing content — does NOT call replaceChildren().
+   * Idempotent: removes any previous capacity section before re-rendering.
+   */
+  public setCapacityData(series: CapacitySeries[]): void {
+    // Remove any existing capacity section (idempotent re-render)
+    this.content.querySelector('.capacity-section')?.remove();
+
+    if (!series || series.length === 0) return;
+
+    const section = document.createElement('div');
+    section.className = 'capacity-section';
+
+    // Add a section header
+    const header = document.createElement('div');
+    header.className = 'capacity-header';
+    header.textContent = 'US Installed Capacity (EIA)';
+    section.appendChild(header);
+
+    // Build the chart
+    this.renderCapacityChart(section, series);
+    this.content.appendChild(section);
+  }
+
+  /**
+   * Render a compact D3 stacked area chart (~110px tall) with:
+   * - Stacked area for solar (gold/yellow) + wind (blue) — additive renewable capacity
+   * - Declining area + line for coal (red)
+   * - Year labels on x-axis (first + last)
+   * - Compact inline legend below chart
+   */
+  private renderCapacityChart(
+    container: HTMLElement,
+    series: CapacitySeries[],
+  ): void {
+    // Extract series by source
+    const solarSeries = series.find(s => s.source === 'SUN');
+    const windSeries = series.find(s => s.source === 'WND');
+    const coalSeries = series.find(s => s.source === 'COL');
+
+    // Collect all years across all series
+    const allYears = new Set<number>();
+    for (const s of series) {
+      for (const d of s.data) allYears.add(d.year);
+    }
+    if (allYears.size === 0) return;
+
+    const sortedYears = [...allYears].sort((a, b) => a - b);
+
+    // Build combined dataset for stacked area: { year, solar, wind }
+    const solarMap = new Map(solarSeries?.data.map(d => [d.year, d.capacityMw]) ?? []);
+    const windMap = new Map(windSeries?.data.map(d => [d.year, d.capacityMw]) ?? []);
+    const coalMap = new Map(coalSeries?.data.map(d => [d.year, d.capacityMw]) ?? []);
+
+    const combinedData = sortedYears.map(year => ({
+      year,
+      solar: solarMap.get(year) ?? 0,
+      wind: windMap.get(year) ?? 0,
+      coal: coalMap.get(year) ?? 0,
+    }));
+
+    // Chart dimensions
+    const containerWidth = this.content.clientWidth - 16 || 200;
+    const height = 100;
+    const margin = { top: 4, right: 8, bottom: 16, left: 8 };
+    const innerWidth = containerWidth - margin.left - margin.right;
+    const innerHeight = height - margin.top - margin.bottom;
+
+    if (innerWidth <= 0) return;
+
+    // D3 stack for solar + wind
+    const stack = d3.stack<{ year: number; solar: number; wind: number }>()
+      .keys(['solar', 'wind'])
+      .order(d3.stackOrderNone)
+      .offset(d3.stackOffsetNone);
+
+    const stacked = stack(combinedData);
+
+    // Scales
+    const xScale = d3.scaleLinear()
+      .domain([sortedYears[0]!, sortedYears[sortedYears.length - 1]!])
+      .range([0, innerWidth]);
+
+    const stackedMax = d3.max(stacked, layer => d3.max(layer, d => d[1])) ?? 0;
+    const coalMax = d3.max(combinedData, d => d.coal) ?? 0;
+    const yMax = Math.max(stackedMax, coalMax) * 1.1; // 10% padding
+
+    const yScale = d3.scaleLinear()
+      .domain([0, yMax])
+      .range([innerHeight, 0]);
+
+    // Create SVG
+    const svg = d3.select(container)
+      .append('svg')
+      .attr('width', containerWidth)
+      .attr('height', height)
+      .attr('viewBox', `0 0 ${containerWidth} ${height}`)
+      .style('display', 'block');
+
+    const g = svg.append('g')
+      .attr('transform', `translate(${margin.left},${margin.top})`);
+
+    // Colors
+    const solarColor = getCSSColor('--yellow');
+    const windColor = getCSSColor('--semantic-info');
+    const coalColor = getCSSColor('--red');
+
+    // Area generator for stacked layers
+    const areaGen = d3.area<d3.SeriesPoint<{ year: number; solar: number; wind: number }>>()
+      .x(d => xScale(d.data.year))
+      .y0(d => yScale(d[0]))
+      .y1(d => yScale(d[1]))
+      .curve(d3.curveMonotoneX);
+
+    const fillColors = [solarColor, windColor];
+
+    // Render stacked areas (solar bottom, wind on top)
+    stacked.forEach((layer, i) => {
+      g.append('path')
+        .datum(layer)
+        .attr('d', areaGen)
+        .attr('fill', fillColors[i]!)
+        .attr('opacity', 0.6);
+    });
+
+    // Render coal as declining area + line
+    const coalArea = d3.area<{ year: number; coal: number }>()
+      .x(d => xScale(d.year))
+      .y0(innerHeight)
+      .y1(d => yScale(d.coal))
+      .curve(d3.curveMonotoneX);
+
+    g.append('path')
+      .datum(combinedData)
+      .attr('d', coalArea)
+      .attr('fill', coalColor)
+      .attr('opacity', 0.2);
+
+    const coalLine = d3.line<{ year: number; coal: number }>()
+      .x(d => xScale(d.year))
+      .y(d => yScale(d.coal))
+      .curve(d3.curveMonotoneX);
+
+    g.append('path')
+      .datum(combinedData)
+      .attr('d', coalLine)
+      .attr('fill', 'none')
+      .attr('stroke', coalColor)
+      .attr('stroke-width', 1.5)
+      .attr('opacity', 0.8);
+
+    // X-axis year labels: first + last
+    const firstYear = sortedYears[0]!;
+    const lastYear = sortedYears[sortedYears.length - 1]!;
+
+    g.append('text')
+      .attr('x', xScale(firstYear))
+      .attr('y', innerHeight + 12)
+      .attr('text-anchor', 'start')
+      .attr('fill', getCSSColor('--text-dim'))
+      .attr('font-size', '9px')
+      .text(String(firstYear));
+
+    g.append('text')
+      .attr('x', xScale(lastYear))
+      .attr('y', innerHeight + 12)
+      .attr('text-anchor', 'end')
+      .attr('fill', getCSSColor('--text-dim'))
+      .attr('font-size', '9px')
+      .text(String(lastYear));
+
+    // Compact inline legend below chart
+    const legend = document.createElement('div');
+    legend.className = 'capacity-legend';
+
+    const items: Array<{ color: string; label: string }> = [
+      { color: solarColor, label: 'Solar' },
+      { color: windColor, label: 'Wind' },
+      { color: coalColor, label: 'Coal' },
+    ];
+
+    for (const item of items) {
+      const el = document.createElement('div');
+      el.className = 'capacity-legend-item';
+
+      const dot = document.createElement('span');
+      dot.className = 'capacity-legend-dot';
+      dot.style.backgroundColor = item.color;
+
+      const label = document.createElement('span');
+      label.textContent = item.label;
+
+      el.appendChild(dot);
+      el.appendChild(label);
+      legend.appendChild(el);
+    }
+
+    container.appendChild(legend);
   }
 
   /**
