@@ -107,7 +107,7 @@ import { SpeciesComebackPanel } from '@/components/SpeciesComebackPanel';
 import { RenewableEnergyPanel } from '@/components/RenewableEnergyPanel';
 import { fetchProgressData } from '@/services/progress-data';
 import { fetchConservationWins } from '@/services/conservation-data';
-import { fetchRenewableEnergyData } from '@/services/renewable-energy-data';
+import { fetchRenewableEnergyData, fetchEnergyCapacity } from '@/services/renewable-energy-data';
 import { fetchHappinessScores } from '@/services/happiness-data';
 import { fetchRenewableInstallations } from '@/services/renewable-installations';
 import { filterBySentiment } from '@/services/sentiment-gate';
@@ -3824,6 +3824,14 @@ export class App {
   private async loadRenewableData(): Promise<void> {
     const data = await fetchRenewableEnergyData();
     this.renewablePanel?.setData(data);
+
+    // EIA capacity data (solar/wind growth, coal decline) — independent of World Bank gauge
+    try {
+      const capacity = await fetchEnergyCapacity();
+      this.renewablePanel?.setCapacityData(capacity);
+    } catch {
+      // EIA failure does not break the existing World Bank gauge
+    }
   }
 
   private async loadMarkets(): Promise<void> {
