@@ -99,12 +99,12 @@ Plans:
   3. Number transitions are smoothly animated, creating an always-moving, hypnotic feel
   4. A progress charts panel shows long-term trend sparklines/area charts for extreme poverty declining, literacy rising, child mortality dropping, and life expectancy increasing
   5. Progress chart data is sourced from Our World in Data REST API and World Bank Indicators API, rendered with D3.js in the warm color palette
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 05-01: TBD
-- [ ] 05-02: TBD
-- [ ] 05-03: TBD
+- [ ] 05-01-PLAN.md -- Counter rate service & CountersPanel with 60fps ticking animation (COUNT-01, COUNT-02, COUNT-03)
+- [ ] 05-02-PLAN.md -- Progress data service (World Bank) & ProgressChartsPanel with D3.js area charts (PROG-01, PROG-02, PROG-03)
+- [ ] 05-03-PLAN.md -- App.ts panel wiring & happy-theme.css styling for both panels (COUNT-01, COUNT-03, PROG-03)
 
 ### Phase 6: Content Spotlight Panels
 **Goal**: Users see a scientific breakthroughs ticker, a daily hero spotlight, and a curated 5-good-things digest on the dashboard
