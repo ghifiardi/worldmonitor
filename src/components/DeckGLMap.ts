@@ -82,6 +82,7 @@ import {
 } from '@/services/hotspot-escalation';
 import { getCountryScore } from '@/services/country-instability';
 import { getAlertsNearLocation } from '@/services/geo-convergence';
+import type { PositiveGeoEvent } from '@/services/positive-events-geo';
 import { getCountriesGeoJson, getCountryAtCoordinates } from '@/services/country-geometry';
 
 export type TimeRange = '1h' | '6h' | '24h' | '48h' | '7d' | 'all';
@@ -273,6 +274,7 @@ export class DeckGLMap {
   private ucdpEvents: UcdpGeoEvent[] = [];
   private displacementFlows: DisplacementFlow[] = [];
   private climateAnomalies: ClimateAnomaly[] = [];
+  private positiveEvents: PositiveGeoEvent[] = [];
 
   // Country highlight state
   private countryGeoJsonLoaded = false;
@@ -1143,6 +1145,11 @@ export class DeckGLMap {
     // Gulf FDI investments layer
     if (mapLayers.gulfInvestments) {
       layers.push(this.createGulfInvestmentsLayer());
+    }
+
+    // Positive events layer (happy variant)
+    if (mapLayers.positiveEvents && this.positiveEvents.length > 0) {
+      layers.push(...this.createPositiveEventsLayers());
     }
 
     // News geo-locations (always shown if data exists)
@@ -2212,7 +2219,8 @@ export class DeckGLMap {
   private needsPulseAnimation(now = Date.now()): boolean {
     return this.hasRecentNews(now)
       || this.hasRecentRiot(now)
-      || this.hotspots.some(h => h.hasBreaking);
+      || this.hotspots.some(h => h.hasBreaking)
+      || this.positiveEvents.some(e => e.count > 10);
   }
 
   private syncPulseAnimation(now = Date.now()): void {
@@ -2320,6 +2328,65 @@ export class DeckGLMap {
         },
         lineWidthMinPixels: 1.5,
         updateTriggers: { pulseTime: now },
+      }));
+    }
+
+    return layers;
+  }
+
+  private createPositiveEventsLayers(): Layer[] {
+    const zoom = this.maplibreMap?.getZoom() || 2;
+    const zoomScale = Math.min(1, (zoom - 1) / 3);
+    const maxPx = 6 + Math.round(8 * zoomScale);
+    const layers: Layer[] = [];
+
+    // Color mapping by category
+    const getCategoryColor = (category: string): [number, number, number, number] => {
+      switch (category) {
+        case 'nature-wildlife':
+        case 'humanity-kindness':
+          return [34, 197, 94, 180]; // green
+        case 'science-health':
+        case 'innovation-tech':
+        case 'climate-wins':
+          return [234, 179, 8, 180]; // gold
+        case 'culture-community':
+          return [139, 92, 246, 180]; // purple
+        default:
+          return [34, 197, 94, 180]; // green default
+      }
+    };
+
+    // Solid fill layer
+    layers.push(new ScatterplotLayer({
+      id: 'positive-events-layer',
+      data: this.positiveEvents,
+      getPosition: (d: PositiveGeoEvent) => [d.lon, d.lat],
+      getRadius: 15000,
+      getFillColor: (d: PositiveGeoEvent) => getCategoryColor(d.category),
+      radiusMinPixels: 4,
+      radiusMaxPixels: maxPx,
+      pickable: true,
+    }));
+
+    // Pulse ring layer for significant events (count > 10)
+    const significantEvents = this.positiveEvents.filter(e => e.count > 10);
+    if (significantEvents.length > 0) {
+      const pulse = 1.0 + 0.6 * (0.5 + 0.5 * Math.sin((this.pulseTime || Date.now()) / 500));
+      layers.push(new ScatterplotLayer({
+        id: 'positive-events-pulse',
+        data: significantEvents,
+        getPosition: (d: PositiveGeoEvent) => [d.lon, d.lat],
+        getRadius: 15000,
+        radiusScale: pulse,
+        radiusMinPixels: 6,
+        radiusMaxPixels: 30,
+        stroked: true,
+        filled: false,
+        getLineColor: [34, 197, 94, 100] as [number, number, number, number],
+        lineWidthMinPixels: 1.5,
+        pickable: false,
+        updateTriggers: { radiusScale: this.pulseTime },
       }));
     }
 
@@ -2456,6 +2523,8 @@ export class DeckGLMap {
         return { html: `<div class="deckgl-tooltip"><strong>${t('popups.cyberThreat.title')}</strong><br/>${text(obj.severity || t('components.deckgl.tooltip.medium'))} · ${text(obj.country || t('popups.unknown'))}</div>` };
       case 'news-locations-layer':
         return { html: `<div class="deckgl-tooltip"><strong>📰 ${t('components.deckgl.tooltip.news')}</strong><br/>${text(obj.title?.slice(0, 80) || '')}</div>` };
+      case 'positive-events-layer':
+        return { html: `<div class="deckgl-tooltip"><strong>${text(obj.name)}</strong><br/>${text(obj.category ? obj.category.replace('-', ' & ') : 'Positive Event')}${obj.count > 1 ? ` &bull; ${obj.count} reports` : ''}</div>` };
       case 'gulf-investments-layer': {
         const inv = obj as GulfInvestment;
         const flag = inv.investingCountry === 'SA' ? '🇸🇦' : '🇦🇪';
@@ -3376,6 +3445,12 @@ export class DeckGLMap {
     this.render();
 
     this.syncPulseAnimation(now);
+  }
+
+  public setPositiveEvents(events: PositiveGeoEvent[]): void {
+    this.positiveEvents = events;
+    this.syncPulseAnimation();
+    this.render();
   }
 
   public updateHotspotActivity(news: NewsItem[]): void {

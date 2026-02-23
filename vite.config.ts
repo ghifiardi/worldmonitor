@@ -282,6 +282,7 @@ function sebufApiPlugin(): Plugin {
       newsServerMod, newsHandlerMod,
       intelligenceServerMod, intelligenceHandlerMod,
       militaryServerMod, militaryHandlerMod,
+      positiveEventsServerMod, positiveEventsHandlerMod,
     ] = await Promise.all([
         import('./server/router'),
         import('./server/cors'),
@@ -320,6 +321,8 @@ function sebufApiPlugin(): Plugin {
         import('./server/worldmonitor/intelligence/v1/handler'),
         import('./src/generated/server/worldmonitor/military/v1/service_server'),
         import('./server/worldmonitor/military/v1/handler'),
+        import('./src/generated/server/worldmonitor/positive_events/v1/service_server'),
+        import('./server/worldmonitor/positive-events/v1/handler'),
       ]);
 
     const serverOptions = { onError: errorMod.mapErrorToResponse };
@@ -341,6 +344,7 @@ function sebufApiPlugin(): Plugin {
       ...newsServerMod.createNewsServiceRoutes(newsHandlerMod.newsHandler, serverOptions),
       ...intelligenceServerMod.createIntelligenceServiceRoutes(intelligenceHandlerMod.intelligenceHandler, serverOptions),
       ...militaryServerMod.createMilitaryServiceRoutes(militaryHandlerMod.militaryHandler, serverOptions),
+      ...positiveEventsServerMod.createPositiveEventsServiceRoutes(positiveEventsHandlerMod.positiveEventsHandler, serverOptions),
     ];
     cachedCorsMod = corsMod;
     return routerMod.createRouter(allRoutes);
