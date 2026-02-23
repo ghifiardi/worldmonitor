@@ -996,6 +996,7 @@
     },
     "intelligenceFindings": {
       "hideFindings": "Hide Intelligence Findings",
+      "popupAlerts": "Pop up new alerts",
       "badgeTitle": "Intelligence findings",
       "title": "Intelligence Findings",
       "none": "No recent intelligence findings",
