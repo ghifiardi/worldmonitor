@@ -103,7 +103,11 @@ import { ProgressChartsPanel } from '@/components/ProgressChartsPanel';
 import { BreakthroughsTickerPanel } from '@/components/BreakthroughsTickerPanel';
 import { HeroSpotlightPanel } from '@/components/HeroSpotlightPanel';
 import { GoodThingsDigestPanel } from '@/components/GoodThingsDigestPanel';
+import { SpeciesComebackPanel } from '@/components/SpeciesComebackPanel';
+import { RenewableEnergyPanel } from '@/components/RenewableEnergyPanel';
 import { fetchProgressData } from '@/services/progress-data';
+import { fetchConservationWins } from '@/services/conservation-data';
+import { fetchRenewableEnergyData } from '@/services/renewable-energy-data';
 import { filterBySentiment } from '@/services/sentiment-gate';
 import { fetchAllPositiveTopicIntelligence } from '@/services/gdelt-intel';
 import { fetchPositiveGeoEvents, geocodePositiveNewsItems } from '@/services/positive-events-geo';
@@ -215,6 +219,8 @@ export class App {
   private breakthroughsPanel?: BreakthroughsTickerPanel;
   private heroPanel?: HeroSpotlightPanel;
   private digestPanel?: GoodThingsDigestPanel;
+  private speciesPanel?: SpeciesComebackPanel;
+  private renewablePanel?: RenewableEnergyPanel;
   private happyAllItems: NewsItem[] = [];
 
   constructor(containerId: string) {
@@ -2123,6 +2129,8 @@ export class App {
     this.breakthroughsPanel?.destroy();
     this.heroPanel?.destroy();
     this.digestPanel?.destroy();
+    this.speciesPanel?.destroy();
+    this.renewablePanel?.destroy();
 
     // Clean up map and AIS
     this.map?.destroy();
@@ -2458,6 +2466,18 @@ export class App {
     if (SITE_VARIANT === 'happy') {
       this.digestPanel = new GoodThingsDigestPanel();
       this.panels['digest'] = this.digestPanel;
+    }
+
+    // Species Comeback Panel (happy variant only)
+    if (SITE_VARIANT === 'happy') {
+      this.speciesPanel = new SpeciesComebackPanel();
+      this.panels['species'] = this.speciesPanel;
+    }
+
+    // Renewable Energy Panel (happy variant only)
+    if (SITE_VARIANT === 'happy') {
+      this.renewablePanel = new RenewableEnergyPanel();
+      this.panels['renewable'] = this.renewablePanel;
     }
 
     // AI Insights Panel (desktop only - hides itself on mobile) -- available for all variants
@@ -3246,6 +3266,14 @@ export class App {
         task: runGuarded('progress', () => this.loadProgressData()),
       });
       // Counters don't need a load task -- they tick from hardcoded rates
+      tasks.push({
+        name: 'species',
+        task: runGuarded('species', () => this.loadSpeciesData()),
+      });
+      tasks.push({
+        name: 'renewable',
+        task: runGuarded('renewable', () => this.loadRenewableData()),
+      });
     }
     if (SITE_VARIANT !== 'happy' && this.mapLayers.weather) tasks.push({ name: 'weather', task: runGuarded('weather', () => this.loadWeatherAlerts()) });
     if (SITE_VARIANT !== 'happy' && this.mapLayers.ais) tasks.push({ name: 'ais', task: runGuarded('ais', () => this.loadAisSignals()) });
@@ -3765,6 +3793,16 @@ export class App {
   private async loadProgressData(): Promise<void> {
     const datasets = await fetchProgressData();
     this.progressPanel?.setData(datasets);
+  }
+
+  private async loadSpeciesData(): Promise<void> {
+    const species = await fetchConservationWins();
+    this.speciesPanel?.setData(species);
+  }
+
+  private async loadRenewableData(): Promise<void> {
+    const data = await fetchRenewableEnergyData();
+    this.renewablePanel?.setData(data);
   }
 
   private async loadMarkets(): Promise<void> {
