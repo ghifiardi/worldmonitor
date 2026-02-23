@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "updatedAt": "2026-02-23T00:00:00Z",
+  "note": "Product-managed curated list. Not user-configurable.",
+  "channels": {
+    "full": [],
+    "tech": [],
+    "finance": []
+  }
+}
