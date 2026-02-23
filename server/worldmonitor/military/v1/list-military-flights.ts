@@ -18,6 +18,34 @@ const REDIS_CACHE_TTL = 120; // 2 min — real-time ADS-B data
 const quantize = (v: number, step: number) => Math.round(v / step) * step;
 const BBOX_GRID_STEP = 1; // 1-degree grid (~111 km at equator)
 
+interface RequestBounds {
+  south: number;
+  north: number;
+  west: number;
+  east: number;
+}
+
+function normalizeBounds(bb: NonNullable<ListMilitaryFlightsRequest['boundingBox']>): RequestBounds {
+  return {
+    south: Math.min(bb.southWest!.latitude, bb.northEast!.latitude),
+    north: Math.max(bb.southWest!.latitude, bb.northEast!.latitude),
+    west: Math.min(bb.southWest!.longitude, bb.northEast!.longitude),
+    east: Math.max(bb.southWest!.longitude, bb.northEast!.longitude),
+  };
+}
+
+function filterFlightsToBounds(
+  flights: ListMilitaryFlightsResponse['flights'],
+  bounds: RequestBounds,
+): ListMilitaryFlightsResponse['flights'] {
+  return flights.filter((flight) => {
+    const lat = flight.location?.latitude;
+    const lon = flight.location?.longitude;
+    if (lat == null || lon == null) return false;
+    return lat >= bounds.south && lat <= bounds.north && lon >= bounds.west && lon <= bounds.east;
+  });
+}
+
 const AIRCRAFT_TYPE_MAP: Record<string, string> = {
   tanker: 'MILITARY_AIRCRAFT_TYPE_TANKER',
   awacs: 'MILITARY_AIRCRAFT_TYPE_AWACS',
@@ -34,6 +62,7 @@ export async function listMilitaryFlights(
   try {
     const bb = req.boundingBox;
     if (!bb?.southWest || !bb?.northEast) return { flights: [], clusters: [], pagination: undefined };
+    const requestBounds = normalizeBounds(bb);
 
     // Quantize bbox to a 1° grid so nearby map views share cache entries.
     // Precise coordinates caused near-zero hit rate since every pan/zoom created a unique key.
@@ -45,7 +74,9 @@ export async function listMilitaryFlights(
     ].join(':');
     const cacheKey = `${REDIS_CACHE_KEY}:${quantizedBB}:${req.operator || ''}:${req.aircraftType || ''}:${req.pagination?.pageSize || 0}`;
     const cached = (await getCachedJson(cacheKey)) as ListMilitaryFlightsResponse | null;
-    if (cached?.flights?.length) return cached;
+    if (cached?.flights?.length) {
+      return { ...cached, flights: filterFlightsToBounds(cached.flights, requestBounds) };
+    }
 
     const isSidecar = (process.env.LOCAL_API_MODE || '').includes('sidecar');
     const baseUrl = isSidecar
@@ -116,11 +147,12 @@ export async function listMilitaryFlights(
       });
     }
 
+    // Cache the full quantized-cell payload, then filter per-request bbox before returning.
     const result: ListMilitaryFlightsResponse = { flights, clusters: [], pagination: undefined };
     if (flights.length > 0) {
       setCachedJson(cacheKey, result, REDIS_CACHE_TTL).catch(() => {});
     }
-    return result;
+    return { flights: filterFlightsToBounds(flights, requestBounds), clusters: [], pagination: undefined };
   } catch {
     return { flights: [], clusters: [], pagination: undefined };
   }
