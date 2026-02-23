@@ -1160,7 +1160,22 @@
       "retry": "Retry",
       "notLive": "{{name}} is not currently live",
       "cannotEmbed": "{{name}} cannot be embedded in this app (YouTube {{code}})",
-      "openOnYouTube": "Open on YouTube"
+      "openOnYouTube": "Open on YouTube",
+      "manage": "Gérer les chaînes",
+      "addChannel": "Ajouter une chaîne",
+      "remove": "Supprimer",
+      "youtubeHandle": "Handle YouTube (ex. @Channel)",
+      "displayName": "Nom d'affichage (optionnel)",
+      "openPanelSettings": "Paramètres d'affichage du panneau",
+      "channelSettings": "Paramètres de la chaîne",
+      "edit": "Modifier",
+      "save": "Enregistrer",
+      "cancel": "Annuler",
+      "editMode": "Mode édition",
+      "done": "Terminé",
+      "confirmDelete": "Supprimer cette chaîne ?",
+      "confirmTitle": "Confirmer",
+      "restoreDefaults": "Restaurer les chaînes par défaut"
     }
   },
   "popups": {

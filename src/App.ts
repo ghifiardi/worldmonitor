@@ -2637,9 +2637,30 @@ export class App {
       }
     });
 
-    // Settings modal
+    // Settings: open in a separate window
     document.getElementById('settingsBtn')?.addEventListener('click', () => {
-      document.getElementById('settingsModal')?.classList.add('active');
+      const settingsUrl = `${window.location.origin}${window.location.pathname}${window.location.search ? window.location.search + '&' : '?'}settings=1`;
+      window.open(settingsUrl, 'worldmonitor-settings', 'width=420,height=640,scrollbars=yes');
+    });
+
+    // Sync panel state when settings are changed in the separate settings window
+    window.addEventListener('storage', (e) => {
+      if (e.key === STORAGE_KEYS.panels && e.newValue) {
+        try {
+          this.panelSettings = JSON.parse(e.newValue) as Record<string, PanelConfig>;
+          this.applyPanelSettings();
+          this.renderPanelToggles();
+        } catch (_) {}
+      }
+      if (e.key === 'worldmonitor-intel-findings' && this.findingsBadge) {
+        this.findingsBadge.setEnabled(e.newValue !== 'hidden');
+      }
+      if (e.key === STORAGE_KEYS.liveChannels && e.newValue) {
+        const panel = this.panels['live-news'];
+        if (panel && typeof (panel as { refreshChannelsFromStorage?: () => void }).refreshChannelsFromStorage === 'function') {
+          (panel as { refreshChannelsFromStorage: () => void }).refreshChannelsFromStorage();
+        }
+      }
     });
 
     document.getElementById('modalClose')?.addEventListener('click', () => {

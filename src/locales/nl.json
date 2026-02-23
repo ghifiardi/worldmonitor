@@ -1068,7 +1068,22 @@
       "retry": "Retry",
       "notLive": "{{name}} is not currently live",
       "cannotEmbed": "{{name}} cannot be embedded in this app (YouTube {{code}})",
-      "openOnYouTube": "Open on YouTube"
+      "openOnYouTube": "Open on YouTube",
+      "manage": "Kanalen beheren",
+      "addChannel": "Kanaal toevoegen",
+      "remove": "Verwijderen",
+      "youtubeHandle": "YouTube-handle (bijv. @Channel)",
+      "displayName": "Weergavenaam (optioneel)",
+      "openPanelSettings": "Paneelweergave-instellingen",
+      "channelSettings": "Kanaalinstellingen",
+      "edit": "Bewerken",
+      "save": "Opslaan",
+      "cancel": "Annuleren",
+      "editMode": "Bewerkingsmodus",
+      "done": "Klaar",
+      "confirmDelete": "Dit kanaal verwijderen?",
+      "confirmTitle": "Bevestigen",
+      "restoreDefaults": "Standaardkanalen herstellen"
     }
   },
   "popups": {

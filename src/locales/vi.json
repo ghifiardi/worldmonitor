@@ -1137,7 +1137,22 @@
       "retry": "Thử lại",
       "notLive": "{{name}} hiện không phát trực tiếp",
       "cannotEmbed": "{{name}} không thể nhúng trong ứng dụng này (YouTube {{code}})",
-      "openOnYouTube": "Mở trên YouTube"
+      "openOnYouTube": "Mở trên YouTube",
+      "manage": "Quản lý kênh",
+      "addChannel": "Thêm kênh",
+      "remove": "Xóa",
+      "youtubeHandle": "Handle YouTube (vd: @Channel)",
+      "displayName": "Tên hiển thị (tùy chọn)",
+      "openPanelSettings": "Cài đặt hiển thị bảng",
+      "channelSettings": "Cài đặt kênh",
+      "edit": "Chỉnh sửa",
+      "save": "Lưu",
+      "cancel": "Hủy",
+      "editMode": "Chế độ chỉnh sửa",
+      "done": "Xong",
+      "confirmDelete": "Xóa kênh này?",
+      "confirmTitle": "Xác nhận",
+      "restoreDefaults": "Khôi phục kênh mặc định"
     }
   },
   "popups": {

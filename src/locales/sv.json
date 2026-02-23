@@ -1068,7 +1068,22 @@
       "retry": "Retry",
       "notLive": "{{name}} is not currently live",
       "cannotEmbed": "{{name}} cannot be embedded in this app (YouTube {{code}})",
-      "openOnYouTube": "Open on YouTube"
+      "openOnYouTube": "Open on YouTube",
+      "manage": "Hantera kanaler",
+      "addChannel": "Lägg till kanal",
+      "remove": "Ta bort",
+      "youtubeHandle": "YouTube-handtag (t.ex. @Channel)",
+      "displayName": "Visningsnamn (valfritt)",
+      "openPanelSettings": "Panelvisningsinställningar",
+      "channelSettings": "Kanalinställningar",
+      "edit": "Redigera",
+      "save": "Spara",
+      "cancel": "Avbryt",
+      "editMode": "Redigeringsläge",
+      "done": "Klar",
+      "confirmDelete": "Ta bort denna kanal?",
+      "confirmTitle": "Bekräfta",
+      "restoreDefaults": "Återställ standardkanaler"
     }
   },
   "popups": {

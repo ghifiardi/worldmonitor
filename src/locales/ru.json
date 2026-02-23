@@ -1160,7 +1160,22 @@
       "retry": "Retry",
       "notLive": "{{name}} is not currently live",
       "cannotEmbed": "{{name}} cannot be embedded in this app (YouTube {{code}})",
-      "openOnYouTube": "Open on YouTube"
+      "openOnYouTube": "Open on YouTube",
+      "manage": "Управление каналами",
+      "addChannel": "Добавить канал",
+      "remove": "Удалить",
+      "youtubeHandle": "YouTube- handle (напр. @Channel)",
+      "displayName": "Отображаемое имя (необяз.)",
+      "openPanelSettings": "Настройки отображения панели",
+      "channelSettings": "Настройки канала",
+      "edit": "Изменить",
+      "save": "Сохранить",
+      "cancel": "Отмена",
+      "editMode": "Режим правки",
+      "done": "Готово",
+      "confirmDelete": "Удалить этот канал?",
+      "confirmTitle": "Подтверждение",
+      "restoreDefaults": "Восстановить каналы по умолчанию"
     }
   },
   "popups": {

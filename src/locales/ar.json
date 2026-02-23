@@ -1160,7 +1160,22 @@
       "retry": "Retry",
       "notLive": "{{name}} is not currently live",
       "cannotEmbed": "{{name}} cannot be embedded in this app (YouTube {{code}})",
-      "openOnYouTube": "Open on YouTube"
+      "openOnYouTube": "Open on YouTube",
+      "manage": "إدارة القنوات",
+      "addChannel": "إضافة قناة",
+      "remove": "إزالة",
+      "youtubeHandle": "معرّف YouTube (مثال: @Channel)",
+      "displayName": "اسم العرض (اختياري)",
+      "openPanelSettings": "إعدادات عرض اللوحة",
+      "channelSettings": "إعدادات القناة",
+      "edit": "تحرير",
+      "save": "حفظ",
+      "cancel": "إلغاء",
+      "editMode": "وضع التحرير",
+      "done": "تم",
+      "confirmDelete": "حذف هذه القناة؟",
+      "confirmTitle": "تأكيد",
+      "restoreDefaults": "استعادة القنوات الافتراضية"
     }
   },
   "popups": {

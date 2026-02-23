@@ -1137,7 +1137,22 @@
       "retry": "ลองใหม่",
       "notLive": "{{name}} ไม่ได้ถ่ายทอดสดอยู่ในขณะนี้",
       "cannotEmbed": "ไม่สามารถฝัง {{name}} ในแอปนี้ได้ (YouTube {{code}})",
-      "openOnYouTube": "เปิดบน YouTube"
+      "openOnYouTube": "เปิดบน YouTube",
+      "manage": "จัดการช่อง",
+      "addChannel": "เพิ่มช่อง",
+      "remove": "ลบ",
+      "youtubeHandle": "YouTube handle (เช่น @Channel)",
+      "displayName": "ชื่อที่แสดง (ไม่บังคับ)",
+      "openPanelSettings": "การตั้งค่าการแสดงผลแผง",
+      "channelSettings": "การตั้งค่าช่อง",
+      "edit": "แก้ไข",
+      "save": "บันทึก",
+      "cancel": "ยกเลิก",
+      "editMode": "โหมดแก้ไข",
+      "done": "เสร็จสิ้น",
+      "confirmDelete": "ลบช่องนี้หรือไม่?",
+      "confirmTitle": "ยืนยัน",
+      "restoreDefaults": "คืนค่าช่องเริ่มต้น"
     }
   },
   "popups": {
