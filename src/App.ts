@@ -100,6 +100,7 @@ import { STOCK_EXCHANGES, FINANCIAL_CENTERS, CENTRAL_BANKS, COMMODITY_HUBS } fro
 import { PositiveNewsFeedPanel } from '@/components/PositiveNewsFeedPanel';
 import { filterBySentiment } from '@/services/sentiment-gate';
 import { fetchAllPositiveTopicIntelligence } from '@/services/gdelt-intel';
+import { fetchPositiveGeoEvents, geocodePositiveNewsItems } from '@/services/positive-events-geo';
 import { isDesktopRuntime } from '@/services/runtime';
 import { IntelligenceServiceClient } from '@/generated/client/worldmonitor/intelligence/v1/service_client';
 import { ResearchServiceClient } from '@/generated/client/worldmonitor/research/v1/service_client';
@@ -3177,6 +3178,9 @@ export class App {
     // Happy variant skips all non-news data layers except natural (which is part of happy map layers)
     if (SITE_VARIANT === 'full') tasks.push({ name: 'firms', task: runGuarded('firms', () => this.loadFirmsData()) });
     if (this.mapLayers.natural) tasks.push({ name: 'natural', task: runGuarded('natural', () => this.loadNatural()) });
+    if (SITE_VARIANT === 'happy' && this.mapLayers.positiveEvents) {
+      tasks.push({ name: 'positiveEvents', task: runGuarded('positiveEvents', () => this.loadPositiveEvents()) });
+    }
     if (SITE_VARIANT !== 'happy' && this.mapLayers.weather) tasks.push({ name: 'weather', task: runGuarded('weather', () => this.loadWeatherAlerts()) });
     if (SITE_VARIANT !== 'happy' && this.mapLayers.ais) tasks.push({ name: 'ais', task: runGuarded('ais', () => this.loadAisSignals()) });
     if (SITE_VARIANT !== 'happy' && this.mapLayers.cables) tasks.push({ name: 'cables', task: runGuarded('cables', () => this.loadCableActivity()) });
@@ -3249,6 +3253,9 @@ export class App {
         case 'displacement':
         case 'climate':
           await this.loadIntelligenceSignals();
+          break;
+        case 'positiveEvents':
+          await this.loadPositiveEvents();
           break;
       }
     } finally {
@@ -3632,6 +3639,29 @@ export class App {
       merged.sort((a, b) => b.pubDate.getTime() - a.pubDate.getTime());
       this.positivePanel.renderPositiveNews(merged);
     }
+  }
+
+  private async loadPositiveEvents(): Promise<void> {
+    // Source 1: GDELT GEO API positive queries (via server-side RPC)
+    const gdeltEvents = await fetchPositiveGeoEvents();
+
+    // Source 2: Geocode curated RSS items from the happy pipeline
+    const rssEvents = geocodePositiveNewsItems(
+      this.happyAllItems.map(item => ({
+        title: item.title,
+        category: item.happyCategory,
+      }))
+    );
+
+    // Merge both sources, deduplicate by name
+    const seen = new Set<string>();
+    const merged = [...gdeltEvents, ...rssEvents].filter(e => {
+      if (seen.has(e.name)) return false;
+      seen.add(e.name);
+      return true;
+    });
+
+    this.map?.setPositiveEvents(merged);
   }
 
   private async loadMarkets(): Promise<void> {

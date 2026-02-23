@@ -31,6 +31,7 @@ import type { DisplacementFlow } from '@/services/displacement';
 import type { Earthquake } from '@/services/earthquakes';
 import type { ClimateAnomaly } from '@/services/climate';
 import type { WeatherAlert } from '@/services/weather';
+import type { PositiveGeoEvent } from '@/services/positive-events-geo';
 
 export type TimeRange = '1h' | '6h' | '24h' | '48h' | '7d' | 'all';
 export type MapView = 'global' | 'america' | 'mena' | 'eu' | 'asia' | 'latam' | 'africa' | 'oceania';
@@ -331,6 +332,13 @@ export class MapContainer {
     } else {
       this.svgMap?.setNewsLocations(data);
     }
+  }
+
+  public setPositiveEvents(events: PositiveGeoEvent[]): void {
+    if (this.useDeckGL) {
+      this.deckGLMap?.setPositiveEvents(events);
+    }
+    // SVG map does not support positive events layer
   }
 
   public updateHotspotActivity(news: NewsItem[]): void {
