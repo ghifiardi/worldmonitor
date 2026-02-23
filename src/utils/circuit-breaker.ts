@@ -22,7 +22,8 @@ export interface CircuitBreakerOptions {
   maxFailures?: number;
   cooldownMs?: number;
   cacheTtlMs?: number;
-  /** Persist cache to IndexedDB across page reloads. Default: true.
+  /** Persist cache to IndexedDB across page reloads. Default: false.
+   *  Opt-in only — cached payloads must be JSON-safe (no Date objects).
    *  Auto-disabled when cacheTtlMs === 0. */
   persistCache?: boolean;
 }
@@ -58,7 +59,7 @@ export class CircuitBreaker<T> {
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     this.persistEnabled = this.cacheTtlMs === 0
       ? false
-      : (options.persistCache ?? true);
+      : (options.persistCache ?? false);
   }
 
   private get persistKey(): string {
@@ -74,7 +75,7 @@ export class CircuitBreaker<T> {
       try {
         const { getPersistentCache } = await import('../services/persistent-cache');
         const entry = await getPersistentCache<T>(this.persistKey);
-        if (!entry?.data) return;
+        if (entry == null || entry.data === undefined || entry.data === null) return;
 
         const age = Date.now() - entry.updatedAt;
         if (age > PERSISTENT_STALE_CEILING_MS) return;
