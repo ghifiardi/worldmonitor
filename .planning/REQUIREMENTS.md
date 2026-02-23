@@ -20,7 +20,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **THEME-03**: Typography and spacing adjustments for welcoming, readable feel (consider sans-serif for happy variant)
 - [x] **THEME-04**: Positive-semantic color system replacing threat/severity colors (celebration gold, growth green, hope blue, kindness pink)
 - [x] **THEME-05**: Happy counterparts for all existing dark-variant UI elements (panel headers, status indicators, loading states, empty states)
-- [ ] **THEME-06**: Celebration animations via canvas-confetti for milestone moments (species recovery announced, renewable energy record, etc.)
+- [x] **THEME-06**: Celebration animations via canvas-confetti for milestone moments (species recovery announced, renewable energy record, etc.)
 
 ### Content Pipeline
 
@@ -140,7 +140,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | THEME-03 | Phase 1 | Complete |
 | THEME-04 | Phase 1 | Complete |
 | THEME-05 | Phase 1 | Complete |
-| THEME-06 | Phase 9 | Pending |
+| THEME-06 | Phase 9 | Complete |
 | FEED-01 | Phase 2 | Complete |
 | FEED-02 | Phase 3 | Complete |
 | FEED-03 | Phase 2 | Complete |
