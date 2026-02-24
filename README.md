@@ -14,7 +14,7 @@
 
 ## What Is This?
 
-This is a fork of [World Monitor](https://github.com/koala73/worldmonitor) extended with GATRA — an AI-driven autonomous Security Operations Center (SOC) built at Indosat Ooredoo Hutchison, protecting 60M+ subscribers across Indonesia.
+This is a fork of [World Monitor](https://github.com/koala73/worldmonitor) extended with GATRA — an AI-driven autonomous Security Operations Center (SOC) built at a major Indonesian telecommunications provider, protecting 60M+ subscribers across Indonesia.
 
 GATRA adds a fourth variant (🛡️ CYBER) to World Monitor's existing World/Tech/Finance dashboard, transforming it from an OSINT monitoring tool into an autonomous cyber defense command center that correlates geopolitical events with security telemetry in real-time.
 
@@ -31,7 +31,7 @@ GATRA adds a fourth variant (🛡️ CYBER) to World Monitor's existing World/Te
 ### Geopolitical-Cyber Correlation Engine
 - **CII -> RL Reward Signal** — World Monitor's Country Instability Index feeds into GATRA's multi-objective reinforcement learning model, so the SOC automatically adjusts defensive posture when regional instability rises
 - **Submarine Cable Health -> BGP Anomaly Detection** — cable degradation near Indonesia (AAE-1, SEA-ME-WE 3/5/6, Palapa Ring) automatically lowers BGP alert thresholds in GATRA's Anomaly Detection Agent
-- **ACLED Conflicts -> Infrastructure Threat Scoring** — armed conflict events mapped against 25,000+ IOH cell tower locations with RED/AMBER/GREEN proximity zones
+- **ACLED Conflicts -> Infrastructure Threat Scoring** — armed conflict events mapped against 25,000+ telco cell tower locations with RED/AMBER/GREEN proximity zones
 - **Prediction Market Early Warning** — Polymarket probability shifts >15% inject early-warning signals into GATRA's threat analysis pipeline 15-30 minutes before traditional detection
 
 ### Indonesia-Specific Intelligence
@@ -50,7 +50,7 @@ GATRA adds a fourth variant (🛡️ CYBER) to World Monitor's existing World/Te
 | **CLA** | Compliance Logging | Real-time audit trail generation |
 | **RVA** | Risk & Vulnerability | CVSS v4, EPSS, CISA KEV prioritization |
 
-### Production Results at IOH
+### Production Results
 - **58.4%** operational cost reduction
 - **79%** analyst workload reduction
 - **60M+** subscribers protected

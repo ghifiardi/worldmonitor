@@ -8,7 +8,7 @@
  *   CLA  - Continuous Learning Agent
  *   RVA  - Reporting & Visualization Agent
  *
- * Mock data uses realistic Indonesian locations and IOH infrastructure refs.
+ * Mock data uses realistic Indonesian locations and telco infrastructure refs.
  * Data is stable within 5-minute time buckets and regenerated with slight
  * randomization per call. Will be replaced by real GATRA API feeds via Pub/Sub.
  */
@@ -67,17 +67,17 @@ const MITRE_TECHNIQUES: Array<{ id: string; name: string }> = [
   { id: 'T1486', name: 'Data Encrypted for Impact' },
 ];
 
-const IOH_INFRA: string[] = [
-  'IOH-CORE-JKT-01',
-  'IOH-EDGE-SBY-03',
-  'IOH-GW-BDG-02',
-  'IOH-DNS-MDN-01',
-  'IOH-CDN-MKS-04',
-  'IOH-MPLS-JKT-02',
-  'IOH-RADIUS-SBY-01',
-  'IOH-FW-JKT-05',
-  'IOH-LB-BDG-03',
-  'IOH-VPN-MDN-02',
+const TELCO_INFRA: string[] = [
+  'TELCO-CORE-JKT-01',
+  'TELCO-EDGE-SBY-03',
+  'TELCO-GW-BDG-02',
+  'TELCO-DNS-MDN-01',
+  'TELCO-CDN-MKS-04',
+  'TELCO-MPLS-JKT-02',
+  'TELCO-RADIUS-SBY-01',
+  'TELCO-FW-JKT-05',
+  'TELCO-LB-BDG-03',
+  'TELCO-VPN-MDN-02',
 ];
 
 const ALERT_DESCRIPTIONS: string[] = [
@@ -100,7 +100,7 @@ const ALERT_DESCRIPTIONS: string[] = [
 
 const CRA_ACTIONS: Array<{ text: string; type: GatraCRAAction['actionType'] }> = [
   { text: 'Blocked IP 45.33.xx.xx at perimeter firewall', type: 'ip_blocked' },
-  { text: 'Isolated host IOH-WS-042 from network', type: 'endpoint_isolated' },
+  { text: 'Isolated host TELCO-WS-042 from network', type: 'endpoint_isolated' },
   { text: 'Revoked compromised service account creds', type: 'credential_rotated' },
   { text: 'Enabled enhanced logging on MPLS segment', type: 'playbook_triggered' },
   { text: 'Triggered SOAR playbook: credential-reset', type: 'playbook_triggered' },
@@ -164,7 +164,7 @@ export async function fetchGatraAlerts(): Promise<GatraAlert[]> {
       lat: loc.lat + (rng() - 0.5) * 0.1,
       lon: loc.lon + (rng() - 0.5) * 0.1,
       locationName: loc.name,
-      infrastructure: IOH_INFRA[Math.floor(rng() * IOH_INFRA.length)] ?? 'IOH-UNKNOWN',
+      infrastructure: TELCO_INFRA[Math.floor(rng() * TELCO_INFRA.length)] ?? 'TELCO-UNKNOWN',
       timestamp: new Date(now - Math.floor(rng() * 24 * 60 * 60 * 1000)),
       agent: AGENTS[Math.floor(rng() * AGENTS.length)] ?? 'ADA',
     });
@@ -222,7 +222,7 @@ export async function fetchGatraCRAActions(): Promise<GatraCRAAction[]> {
       id: `cra-${timeBucketSeed()}-${i}`,
       action: entry.text,
       actionType: entry.type,
-      target: IOH_INFRA[Math.floor(rng() * IOH_INFRA.length)] ?? 'IOH-UNKNOWN',
+      target: TELCO_INFRA[Math.floor(rng() * TELCO_INFRA.length)] ?? 'TELCO-UNKNOWN',
       timestamp: new Date(now - Math.floor(rng() * 12 * 60 * 60 * 1000)),
       success: rng() > 0.1,
     });
@@ -263,7 +263,7 @@ export async function fetchGatraCorrelations(alerts: GatraAlert[]): Promise<Gatr
 
   const correlations: GatraCorrelation[] = [];
   const templates: Array<{ type: GatraCorrelation['worldMonitorEventType']; template: (loc: string, count: number) => string }> = [
-    { type: 'cii_spike', template: (loc, count) => `CII spike in ${loc} region correlates with ${count} new anomalies detected by ADA on IOH infrastructure` },
+    { type: 'cii_spike', template: (loc, count) => `CII spike in ${loc} region correlates with ${count} new anomalies detected by ADA on telco infrastructure` },
     { type: 'apt_activity', template: (loc, count) => `Elevated APT scanning activity near ${loc} NOC aligns with ${count} GATRA alerts — nation-state campaign suspected` },
     { type: 'geopolitical', template: (loc, count) => `Regional geopolitical tensions around ${loc} preceded ${count} brute-force attempts on edge gateways` },
     { type: 'cyber_threat', template: (loc, count) => `WorldMonitor threat intel layer shows C2 infrastructure overlap with ${count} GATRA detections in ${loc}` },

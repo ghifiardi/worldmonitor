@@ -74,7 +74,7 @@ export class GatraSOCDashboardPanel extends Panel {
       title: 'GATRA SOC',
       showCount: true,
       trackActivity: true,
-      infoTooltip: 'GATRA AI-Driven SOC — 5-agent pipeline monitoring IOH infrastructure. Data refreshes every 60 s.',
+      infoTooltip: 'GATRA AI-Driven SOC — 5-agent pipeline monitoring telco infrastructure. Data refreshes every 60 s.',
     });
   }
 
