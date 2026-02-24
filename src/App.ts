@@ -2470,6 +2470,9 @@ export class App {
     this.map.onTimeRangeChanged((range) => {
       this.currentTimeRange = range;
       this.applyTimeRangeFilterToNewsPanelsDebounced();
+      // Update GATRA SOC panel time filter
+      const gatraPanel = this.panels['gatra-soc'] as GatraSOCDashboardPanel | undefined;
+      gatraPanel?.setTimeRange(range);
     });
 
     this.applyPanelSettings();
