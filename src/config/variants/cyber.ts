@@ -96,6 +96,7 @@ export const DEFAULT_PANELS: Record<string, PanelConfig> = {
   'live-news': { name: 'Cyber Headlines', enabled: true, priority: 1 },
   insights: { name: 'AI Insights', enabled: true, priority: 1 },
   'gatra-soc': { name: 'GATRA SOC', enabled: true, priority: 1 },
+  'cii-score': { name: 'CII Monitor', enabled: true, priority: 1 },
   'ioc-lookup': { name: 'IoC Lookup', enabled: true, priority: 1 },
   'cve-feed': { name: 'CVE Feed', enabled: true, priority: 1 },
   security: { name: 'Cybersecurity News', enabled: true, priority: 1 },

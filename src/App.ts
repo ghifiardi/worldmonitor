@@ -86,6 +86,7 @@ import { GatraSOCDashboardPanel } from '@/panels/gatra-soc-panel';
 import { IoCLookupPanel } from '@/panels/ioc-lookup-panel';
 import { RansomwareTrackerPanel } from '@/panels/ransomware-tracker-panel';
 import { CVEFeedPanel } from '@/panels/cve-feed-panel';
+import { CiiScorePanel } from '@/panels/cii-score-panel';
 import { refreshGatraData, ingestConflictCorrelations } from '@/gatra/connector';
 import type { SearchResult } from '@/components/SearchModal';
 import { collectStoryData } from '@/services/story-data';
@@ -2404,6 +2405,9 @@ export class App {
 
       const iocPanel = new IoCLookupPanel();
       this.panels['ioc-lookup'] = iocPanel;
+
+      const ciiScorePanel = new CiiScorePanel();
+      this.panels['cii-score'] = ciiScorePanel;
     }
 
     // AI Insights Panel (desktop only - hides itself on mobile)
