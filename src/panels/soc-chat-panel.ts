@@ -1260,6 +1260,64 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
         `Ask: "list CVEs" \u00B7 "pentest" \u00B7 "cloud security" \u00B7 "OWASP" \u00B7 "encryption" \u00B7 "supply chain"`;
     }
 
+    // ── IOC: IOC Scanner agent (used by playbooks) ────────────────
+    case 'ioc': {
+      // Try to extract IOCs from the prompt text
+      const iocMatch = extractIoC(message);
+      if (iocMatch) {
+        try {
+          const result = await lookupIoC(iocMatch.value);
+          let response = `IOC Intelligence Report \u2014 ${iocMatch.type.toUpperCase()}: ${iocMatch.value}\n\n`;
+
+          for (const src of result.sources) {
+            const isClean = /not found|clean|no results/i.test(src.verdict);
+            response += `${src.name}:\n` +
+              `  Verdict: ${isClean ? 'CLEAN' : src.verdict.toUpperCase()}\n` +
+              `  ${src.details}\n` +
+              (src.url ? `  Report: ${src.url}\n` : '') + `\n`;
+          }
+
+          const verdictIcon = result.threatLevel === 'malicious' ? '\u26A0\uFE0F'
+            : result.threatLevel === 'suspicious' ? '\u26A0\uFE0F' : '\u2705';
+          response += `Overall: ${verdictIcon} ${result.threatLevel.toUpperCase()} (confidence: ${result.confidence}%)`;
+
+          if (result.malwareFamily) response += `\nMalware Family: ${result.malwareFamily}`;
+          if (result.tags.length > 0) response += `\nTags: ${result.tags.join(', ')}`;
+          if (result.firstSeen) response += `\nFirst Seen: ${result.firstSeen.toISOString().split('T')[0]}`;
+          if (result.relatedIocs.length > 0) response += `\nRelated IOCs: ${result.relatedIocs.slice(0, 5).join(', ')}`;
+
+          return response;
+        } catch {
+          // Fall through to threat feed below
+        }
+      }
+
+      // No specific IOC found — provide recent threat intelligence feed
+      try {
+        const threats = await getRecentThreats();
+        if (threats.length > 0) {
+          const top = threats.slice(0, 8);
+          let response = `IOC Scanner \u2014 Live Threat Intelligence Feed\n` +
+            `${'─'.repeat(40)}\n` +
+            `${threats.length} threats reported in last 24h (ThreatFox):\n\n`;
+          for (const t of top) {
+            response += `\u2022 ${t.ioc} (${t.iocType})\n` +
+              `  Malware: ${t.malware} | Confidence: ${t.confidence}% | Tags: ${t.tags.join(', ') || 'none'}\n` +
+              `  Reporter: ${t.reporter}\n\n`;
+          }
+          response += `Showing ${top.length}/${threats.length} entries. Checking URLs, domains, and hashes against live databases.`;
+          return response;
+        }
+      } catch {
+        // Fall through to generic
+      }
+
+      return `IOC Scanner online.\n` +
+        `\u2022 Connected to: ThreatFox, URLhaus, MalwareBazaar (abuse.ch)\n` +
+        `\u2022 Provide an IP, domain, URL, or hash for live reputation lookup\n` +
+        `\u2022 Checking known malware families, C2 servers, and phishing domains`;
+    }
+
     default:
       return 'Agent online. Ask me a question.';
   }
