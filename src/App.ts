@@ -88,6 +88,7 @@ import { RansomwareTrackerPanel } from '@/panels/ransomware-tracker-panel';
 import { CVEFeedPanel } from '@/panels/cve-feed-panel';
 import { CiiScorePanel } from '@/panels/cii-score-panel';
 import { PredictionSignalsPanel } from '@/panels/prediction-signals-panel';
+import { A2aSecurityPanel } from '@/panels/a2a-security-panel';
 import { SocChatPanel } from '@/panels/soc-chat-panel';
 import { refreshGatraData, ingestConflictCorrelations } from '@/gatra/connector';
 import type { SearchResult } from '@/components/SearchModal';
@@ -334,6 +335,18 @@ export class App {
         console.log('[App] CII migration: reset cyber panel settings to include CII Monitor');
       }
       localStorage.setItem(CII_MIGRATION_KEY, 'done');
+    }
+
+    // One-time migration: A2A Security Monitor panel
+    const A2A_MIGRATION_KEY = 'worldmonitor-a2a-panel-v1';
+    if (!localStorage.getItem(A2A_MIGRATION_KEY)) {
+      if (currentVariant === 'cyber') {
+        this.panelSettings = { ...DEFAULT_PANELS };
+        saveToStorage(STORAGE_KEYS.panels, this.panelSettings);
+        localStorage.removeItem(this.PANEL_ORDER_KEY);
+        console.log('[App] A2A migration: reset cyber panel settings to include A2A Security Monitor');
+      }
+      localStorage.setItem(A2A_MIGRATION_KEY, 'done');
     }
 
     // Desktop key management panel must always remain accessible in Tauri.
@@ -2445,6 +2458,9 @@ export class App {
 
       const predictionSignalsPanel = new PredictionSignalsPanel();
       this.panels['prediction-signals'] = predictionSignalsPanel;
+
+      const a2aSecurityPanel = new A2aSecurityPanel();
+      this.panels['a2a-security'] = a2aSecurityPanel;
 
       // SOC Chat slide-out panel
       this.socChatPanel = new SocChatPanel();
