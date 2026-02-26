@@ -96,8 +96,8 @@ const EXTERNAL_AGENTS: RegisteredAgent[] = [
     totalInteractions: 456, anomalyCount: 1, region: 'SG',
   },
   {
-    cardId: 'ext-004', name: 'siem-relay-ioh', provider: 'IOH Internal',
-    url: 'https://siem.ioh.co.id/a2a',
+    cardId: 'ext-004', name: 'siem-relay-hq', provider: 'HQ Internal',
+    url: 'https://siem.internal.corp/a2a',
     skills: ['log_forwarding', 'alert_correlation', 'event_enrichment'],
     status: 'verified', trustScore: 97, signatureValid: true,
     firstSeen: Date.now() - 90 * 86400000, lastInteraction: Date.now() - 60000,
