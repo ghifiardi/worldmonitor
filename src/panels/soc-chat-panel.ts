@@ -488,12 +488,6 @@ function injectCSS(): void {
   width: 16px; height: 16px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
 }
-
-/* Hide Vercel Live toolbar */
-vercel-live-feedback { display: none !important; }
-#vercel-live-feedback { display: none !important; }
-[data-vercel-live] { display: none !important; }
-iframe[src*="vercel.live"] { display: none !important; }
   `;
   document.head.appendChild(s);
 }
