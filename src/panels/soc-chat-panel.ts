@@ -65,6 +65,10 @@ const GATRA_AGENTS: GatraAgentDef[] = [
       /ddos|denial\s*of\s*service|botnet|c2|command\s*and\s*control/i,
       /lateral\s*movement|beacon|exfiltrat/i,
       /sandbox|detonat/i, /ioc.*match|signature/i,
+      // IOC lookup: hashes, IPs, scan/check/lookup commands
+      /\b[0-9a-fA-F]{32}\b/i, /\b[0-9a-fA-F]{40}\b/i, /\b[0-9a-fA-F]{64}\b/i,
+      /(?:scan|check|lookup|search|query)\s/i,
+      /\b(?:\d{1,3}\.){3}\d{1,3}\b/,
       /@ada\b/i,
     ],
   },
@@ -245,6 +249,42 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
   switch (agent.id) {
     // ── ADA: Anomaly Detection Agent ──────────────────────────────
     case 'ada': {
+      // IOC Lookup: if message contains a hash, IP, or URL, look it up live
+      const iocMatch = extractIoC(message);
+      if (iocMatch) {
+        try {
+          const result = await lookupIoC(iocMatch.value);
+          let response = `IOC Scan \u2014 ${iocMatch.type.toUpperCase()}: ${iocMatch.value}\n\n`;
+
+          for (const src of result.sources) {
+            const isClean = /not found|clean|no results/i.test(src.verdict);
+            response += `${src.name}:\n` +
+              `  Verdict: ${isClean ? 'CLEAN' : src.verdict.toUpperCase()}\n` +
+              `  ${src.details}\n` +
+              (src.url ? `  Report: ${src.url}\n` : '') + `\n`;
+          }
+
+          const verdictIcon = result.threatLevel === 'malicious' ? '\u26A0\uFE0F'
+            : result.threatLevel === 'suspicious' ? '\u26A0\uFE0F' : '\u2705';
+          response += `Overall: ${verdictIcon} ${result.threatLevel.toUpperCase()} (confidence: ${result.confidence}%)`;
+
+          if (result.malwareFamily) response += `\nMalware Family: ${result.malwareFamily}`;
+          if (result.tags.length > 0) response += `\nTags: ${result.tags.join(', ')}`;
+          if (result.firstSeen) response += `\nFirst Seen: ${result.firstSeen.toISOString().split('T')[0]}`;
+          if (result.relatedIocs.length > 0) response += `\nRelated IOCs: ${result.relatedIocs.slice(0, 5).join(', ')}`;
+
+          response += `\n\n${result.threatLevel === 'malicious'
+            ? 'Recommendation: Block this indicator via CRA. Investigate internal systems that communicated with it.'
+            : result.threatLevel === 'suspicious'
+            ? 'Recommendation: Monitor closely. Check internal logs for connections to this indicator.'
+            : 'No matches in current threat databases. Note: absence of evidence is not evidence of absence.'}`;
+
+          return response;
+        } catch {
+          return `IOC lookup for "${iocMatch.value}" temporarily unavailable. The abuse.ch APIs (ThreatFox, URLhaus, MalwareBazaar) may be experiencing issues. Try again shortly.`;
+        }
+      }
+
       // Why was it flagged/detected
       if (/why.*(flagged|detected|triggered)/i.test(message)) {
         const alert = alerts[0];
