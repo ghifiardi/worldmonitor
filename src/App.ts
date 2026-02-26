@@ -88,6 +88,7 @@ import { RansomwareTrackerPanel } from '@/panels/ransomware-tracker-panel';
 import { CVEFeedPanel } from '@/panels/cve-feed-panel';
 import { CiiScorePanel } from '@/panels/cii-score-panel';
 import { PredictionSignalsPanel } from '@/panels/prediction-signals-panel';
+import { SocChatPanel } from '@/panels/soc-chat-panel';
 import { refreshGatraData, ingestConflictCorrelations } from '@/gatra/connector';
 import type { SearchResult } from '@/components/SearchModal';
 import { collectStoryData } from '@/services/story-data';
@@ -167,6 +168,7 @@ export class App {
   private languageSelector: LanguageSelector | null = null;
   private searchModal: SearchModal | null = null;
   private mobileWarningModal: MobileWarningModal | null = null;
+  private socChatPanel: SocChatPanel | null = null;
   private pizzintIndicator: PizzIntIndicator | null = null;
   private latestPredictions: PredictionMarket[] = [];
   private latestMarkets: MarketData[] = [];
@@ -2443,6 +2445,28 @@ export class App {
 
       const predictionSignalsPanel = new PredictionSignalsPanel();
       this.panels['prediction-signals'] = predictionSignalsPanel;
+
+      // SOC Chat slide-out panel
+      this.socChatPanel = new SocChatPanel();
+      this.socChatPanel.setMapCallbacks(
+        () => {
+          const c = this.map?.getCenter();
+          return c ? { lat: c.lat, lon: c.lon, zoom: 4 } : null;
+        },
+        (lat, lng, zoom) => this.map?.setCenter(lat, lng, zoom),
+      );
+
+      // Add SOC COMMS toggle button to header-right
+      const headerRight = document.querySelector('.header-right');
+      if (headerRight) {
+        const socToggle = this.socChatPanel.createToggleButton();
+        const settingsBtn = headerRight.querySelector('.settings-btn');
+        if (settingsBtn) {
+          headerRight.insertBefore(socToggle, settingsBtn);
+        } else {
+          headerRight.appendChild(socToggle);
+        }
+      }
     }
 
     // AI Insights Panel (desktop only - hides itself on mobile)
