@@ -2059,6 +2059,7 @@ export class SocChatPanel {
     const extracted = extractIoC(text);
     const iocType = extracted ? extracted.type : 'unknown' as const;
     const iocValue = extracted ? extracted.value : '';
+    console.log('[SOC Chat] routeToAgents:', { text: text.slice(0, 60), extracted, iocType });
     if (iocType !== 'unknown') {
       const iocSender: GatraAgentDef = {
         id: 'ioc-scan', name: 'IOC', fullName: 'IOC Scanner',
@@ -2152,15 +2153,27 @@ export class SocChatPanel {
         this.showTyping(agent);
 
         const timer = setTimeout(async () => {
-          this.hideTyping(agent.id);
-          const response = await generateAgentResponse(agent, text);
-          const agentMsg: ChatMessage = {
-            id: uid(), timestamp: Date.now(),
-            sender: { id: agent.id, name: agent.name, type: 'agent', color: agent.color },
-            type: 'agent', content: response,
-          };
-          this.addMessage(agentMsg);
-          this.channel.postMessage(agentMsg);
+          try {
+            this.hideTyping(agent.id);
+            const response = await generateAgentResponse(agent, text);
+            const agentMsg: ChatMessage = {
+              id: uid(), timestamp: Date.now(),
+              sender: { id: agent.id, name: agent.name, type: 'agent', color: agent.color },
+              type: 'agent', content: response,
+            };
+            this.addMessage(agentMsg);
+            this.channel.postMessage(agentMsg);
+          } catch (err) {
+            this.hideTyping(agent.id);
+            console.error(`[SOC Chat] ${agent.name} error:`, err);
+            const errMsg: ChatMessage = {
+              id: uid(), timestamp: Date.now(),
+              sender: { id: agent.id, name: agent.name, type: 'agent', color: agent.color },
+              type: 'agent', content: `${agent.name} encountered an error processing your request. Check browser console for details.`,
+            };
+            this.addMessage(errMsg);
+            this.channel.postMessage(errMsg);
+          }
         }, delay);
 
         this.typingTimers.set(agent.id, timer);
