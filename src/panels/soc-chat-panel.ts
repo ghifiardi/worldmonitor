@@ -10,6 +10,8 @@
 import { escapeHtml } from '@/utils/sanitize';
 import { getGatraSnapshot, getAlerts, getAgentStatus, getCRAActions } from '@/gatra/connector';
 import { getCachedCVEFeed } from '@/services/cve-feed';
+import { lookupIoC, detectIoCType, getRecentThreats } from '@/services/ioc-lookup';
+import { fetchRansomwareVictims, computeRansomwareStats } from '@/services/ransomware-tracker';
 import type { GatraAlert } from '@/types';
 
 // ── Types ────────────────────────────────────────────────────────
@@ -202,7 +204,7 @@ function severityCounts(alerts: GatraAlert[]): { critical: number; high: number;
 
 // ── Agent response generation ────────────────────────────────────
 
-function generateAgentResponse(agent: GatraAgentDef, message: string): string {
+async function generateAgentResponse(agent: GatraAgentDef, message: string): Promise<string> {
   const snap = getGatraSnapshot();
   const alerts = snap?.alerts ?? [];
   const actions = getCRAActions();
@@ -283,6 +285,40 @@ function generateAgentResponse(agent: GatraAgentDef, message: string): string {
       if (/malware|ransomware|trojan|worm|virus|rootkit/i.test(message)) {
         const malwareAlerts = alerts.filter(a => /T1059|T1053|T1547|T1055|T1027|T1486|T1490/i.test(a.mitreId));
         const isRansomware = /ransomware/i.test(message);
+
+        // Fetch real ransomware data if ransomware-related
+        let ransomwareLive = '';
+        if (isRansomware) {
+          try {
+            const victims = await fetchRansomwareVictims();
+            const stats = computeRansomwareStats(victims);
+            const topGroups = stats.topGroups.slice(0, 5).map(g => `${g.name} (${g.count} victims)`).join(', ');
+            const topSectors = stats.topSectors.slice(0, 3).map(s => `${s.name} (${s.count})`).join(', ');
+            const recentVictims = victims.slice(0, 3).map(v =>
+              `    ${v.group}: ${v.victimName}${v.country ? ` (${v.country})` : ''}${v.sector ? ` \u2014 ${v.sector}` : ''} \u2014 ${v.discoveredDate.toISOString().split('T')[0]}`
+            ).join('\n');
+            ransomwareLive = `\nLIVE Ransomware Intelligence (ransomware.live):\n` +
+              `  Total victims (30 days): ${stats.totalVictims30d}\n` +
+              `  Most active groups: ${topGroups}\n` +
+              `  Most targeted sectors: ${topSectors}\n` +
+              `  Recent victims:\n${recentVictims}\n`;
+          } catch { /* fallback to simulated */ }
+        }
+
+        // Fetch real recent threats from ThreatFox
+        let threatFoxLive = '';
+        try {
+          const threats = await getRecentThreats();
+          const malwareThreats = threats.filter(t => t.tags.some(tag => /malware|trojan|rat|ransomware|stealer/i.test(tag)) || /payload|c2|botnet/i.test(t.threatType));
+          if (malwareThreats.length > 0) {
+            const topThreats = malwareThreats.slice(0, 5).map(t =>
+              `    ${t.malware} (${t.threatType}) \u2014 conf: ${t.confidence}% \u2014 ${t.iocType}: ${t.ioc.length > 40 ? t.ioc.slice(0, 37) + '...' : t.ioc}`
+            ).join('\n');
+            threatFoxLive = `\nLIVE Threat Feed (ThreatFox, last 24h):\n` +
+              `  Active malware IOCs: ${malwareThreats.length}\n` +
+              `  Top threats:\n${topThreats}\n`;
+          }
+        } catch { /* fallback to simulated */ }
         return `${isRansomware ? 'Ransomware' : 'Malware'} Detection Analysis:\n\n` +
           `ADA uses a multi-layered detection approach that combines signature-based and behavioral methods to identify malicious software before it can cause damage.\n\n` +
           `Active malware-related alerts: ${malwareAlerts.length}\n\n` +
@@ -304,8 +340,9 @@ function generateAgentResponse(agent: GatraAgentDef, message: string): string {
           `  \u2014 T1486 (Data Encrypted for Impact) \u2014 ransomware encryption activity\n` +
           `  \u2014 T1490 (Inhibit System Recovery) \u2014 backup/shadow copy destruction\n` +
           `  \u2014 T1027 (Obfuscated Files) \u2014 packed/encoded payloads\n\n` +
-          `Last 24h activity: ${Math.floor(Math.random() * 5 + 2)} samples detonated in sandbox, ${Math.floor(Math.random() * 3)} quarantined. IOC extraction (file hashes, C2 IPs, mutex names) auto-fed to TAA for threat intel correlation.\n\n` +
-          `Related topics: "lateral movement" \u00B7 "C2 beacons" \u00B7 "sandbox results" \u00B7 "EDR"`;
+          `Last 24h activity: ${Math.floor(Math.random() * 5 + 2)} samples detonated in sandbox, ${Math.floor(Math.random() * 3)} quarantined. IOC extraction (file hashes, C2 IPs, mutex names) auto-fed to TAA for threat intel correlation.\n` +
+          ransomwareLive + threatFoxLive +
+          `\nRelated topics: "lateral movement" \u00B7 "C2 beacons" \u00B7 "sandbox results" \u00B7 "EDR"`;
       }
 
       // EDR / endpoint / UEBA / behavioral
@@ -448,15 +485,38 @@ function generateAgentResponse(agent: GatraAgentDef, message: string): string {
 
       // IOC / indicator of compromise / threat intel feed
       if (/ioc|indicator.*compromise|intel(ligence)?.*feed/i.test(message)) {
-        return `IOC & Threat Intelligence:\n` +
-          `\u2022 Active IOC feeds: STIX/TAXII, CISA KEV, MISP community\n` +
-          `\u2022 IOC types monitored: IP, domain, hash (MD5/SHA256), URL, email\n` +
-          `\u2022 Current matches against active alerts: ${Math.min(alerts.length, Math.floor(Math.random() * 5 + 1))}\n` +
-          `\u2022 Feed freshness: updated every 15m\n` +
-          `\u2022 Auto-enrichment: WHOIS, GeoIP, passive DNS, VirusTotal score\n` +
-          `\u2022 False positive rate on IOC matches: ~${(3 + Math.random() * 7).toFixed(1)}%\n` +
-          `\u2022 IOCs are auto-correlated with ADA anomalies and RVA vulnerability data\n` +
-          `Ask: "specific APT" \u00B7 "threat actor" \u00B7 "MITRE mapping"`;
+        // Fetch live ThreatFox data
+        let liveFeed = '';
+        try {
+          const threats = await getRecentThreats();
+          if (threats.length > 0) {
+            const topIOCs = threats.slice(0, 8).map(t =>
+              `    ${t.iocType}: ${t.ioc.length > 45 ? t.ioc.slice(0, 42) + '...' : t.ioc} \u2014 ${t.malware} (${t.threatType}, conf: ${t.confidence}%)`
+            ).join('\n');
+            const malwareFamilies = [...new Set(threats.map(t => t.malware))].slice(0, 6).join(', ');
+            liveFeed = `\n\nLIVE Threat Intelligence (ThreatFox, last 24h):\n` +
+              `  Total IOCs reported: ${threats.length}\n` +
+              `  Active malware families: ${malwareFamilies}\n` +
+              `  Recent IOCs:\n${topIOCs}\n` +
+              `\n  \u2192 Paste any IP, hash, domain, or URL in this chat to look it up live against ThreatFox, URLhaus, and MalwareBazaar.\n`;
+          }
+        } catch { /* fallback to static */ }
+
+        return `IOC & Threat Intelligence:\n\n` +
+          `Indicators of Compromise (IOCs) are forensic artifacts \u2014 IP addresses, file hashes, domains, URLs \u2014 that indicate a system has been breached or is communicating with attacker infrastructure. TAA continuously correlates IOCs from multiple feeds against your environment.\n\n` +
+          `Active IOC feeds:\n` +
+          `  \u2014 ThreatFox (abuse.ch): Community-sourced IOCs updated in real-time\n` +
+          `  \u2014 URLhaus (abuse.ch): Malicious URL tracking and takedown\n` +
+          `  \u2014 MalwareBazaar (abuse.ch): Malware sample repository with YARA matches\n` +
+          `  \u2014 CISA KEV: Known Exploited Vulnerabilities catalog\n` +
+          `  \u2014 NVD: National Vulnerability Database CVE feed\n\n` +
+          `IOC types monitored: IP, domain, hash (MD5/SHA1/SHA256), URL, email\n` +
+          `Current matches against active alerts: ${Math.min(alerts.length, Math.floor(Math.random() * 5 + 1))}\n` +
+          `Feed freshness: updated every 5\u201315 minutes\n` +
+          `Auto-enrichment: WHOIS, GeoIP, passive DNS, reputation scoring\n` +
+          `False positive rate on IOC matches: ~${(3 + Math.random() * 7).toFixed(1)}%\n` +
+          liveFeed +
+          `\nRelated topics: "APT" \u00B7 "threat actor" \u00B7 "MITRE mapping" \u00B7 "phishing"`;
       }
 
       // Phishing / social engineering / BEC
@@ -495,18 +555,39 @@ function generateAgentResponse(agent: GatraAgentDef, message: string): string {
 
       // Campaign / TTP / dark web / underground
       if (/campaign|ttps?|dark\s*web|underground/i.test(message)) {
-        return `Campaign & Dark Web Intelligence:\n` +
-          `\u2022 Active campaign tracking: ${Math.floor(Math.random() * 3 + 1)} campaigns correlated\n` +
-          `\u2022 TTP clustering: alerts grouped by behavioral similarity\n` +
-          `\u2022 Dark web monitoring:\n` +
+        // Fetch live ransomware leak site data
+        let leakSiteLive = '';
+        try {
+          const victims = await fetchRansomwareVictims();
+          const stats = computeRansomwareStats(victims);
+          if (stats.totalVictims30d > 0) {
+            const topGroups = stats.topGroups.slice(0, 4).map(g => `${g.name} (${g.count})`).join(', ');
+            const recentLeaks = victims.slice(0, 3).map(v =>
+              `    ${v.group}: ${v.victimName}${v.country ? ` (${v.country})` : ''} \u2014 ${v.discoveredDate.toISOString().split('T')[0]}`
+            ).join('\n');
+            leakSiteLive = `\n\nLIVE Ransomware Leak Site Intelligence (ransomware.live):\n` +
+              `  Victims posted (30 days): ${stats.totalVictims30d}\n` +
+              `  Most active groups: ${topGroups}\n` +
+              `  Recent leak posts:\n${recentLeaks}\n`;
+          }
+        } catch { /* fallback */ }
+
+        return `Campaign & Dark Web Intelligence:\n\n` +
+          `TAA tracks active threat campaigns by clustering alerts that share infrastructure, tooling, or behavioral patterns. This enables analysts to see the bigger picture \u2014 connecting individual alerts into coordinated attack campaigns.\n\n` +
+          `Active campaign tracking: ${Math.floor(Math.random() * 3 + 1)} campaigns correlated\n` +
+          `TTP clustering: alerts grouped by behavioral similarity\n\n` +
+          `Dark web monitoring:\n` +
           `  \u2014 Credential leaks: checked against internal domains\n` +
           `  \u2014 Ransomware leak sites: monitored for data mentions\n` +
-          `  \u2014 Underground forums: exploit kit chatter tracked\n` +
-          `\u2022 Campaign indicators:\n` +
+          `  \u2014 Underground forums: exploit kit chatter tracked\n\n` +
+          `Campaign indicators:\n` +
           `  \u2014 Shared infrastructure (IP/domain overlap)\n` +
           `  \u2014 Common tooling (same malware family/packer)\n` +
           `  \u2014 Temporal correlation (attack timing patterns)\n` +
-          `\u2022 RL model weights TTP clustering for triage prioritization`;
+          `  \u2014 Victimology overlap (same industry/region targeting)\n` +
+          leakSiteLive +
+          `\nRL model weights TTP clustering for triage prioritization.\n\n` +
+          `Related topics: "APT" \u00B7 "ransomware" (ADA) \u00B7 "IOC feeds" \u00B7 "phishing"`;
       }
 
       // Zero-day / credential stuffing / brute force
@@ -1904,6 +1985,83 @@ export class SocChatPanel {
   // ── Agent routing ──────────────────────────────────────────────
 
   private routeToAgents(text: string): void {
+    // ── IOC Lookup: detect if user pasted an IP, hash, domain, or URL ──
+    const iocType = detectIoCType(text.trim());
+    if (iocType !== 'unknown') {
+      const iocSender: GatraAgentDef = {
+        id: 'ioc-scan', name: 'IOC', fullName: 'IOC Scanner',
+        role: 'Live IOC lookup against ThreatFox, URLhaus, MalwareBazaar',
+        color: '#e040fb', emoji: '\uD83D\uDD0E',
+        triggerPatterns: [],
+      };
+      this.showTyping(iocSender);
+
+      const timer = setTimeout(async () => {
+        try {
+          const result = await lookupIoC(text.trim());
+          this.hideTyping(iocSender.id);
+
+          let response = `Live IOC Lookup \u2014 ${iocType.toUpperCase()}: ${escapeHtml(text.trim())}\n\n`;
+
+          // Show each source's results
+          for (const src of result.sources) {
+            const isClean = /not found|clean|no results/i.test(src.verdict);
+            response += `${src.name}:\n` +
+              `  Verdict: ${isClean ? 'CLEAN' : src.verdict.toUpperCase()}\n` +
+              `  ${src.details}\n` +
+              (src.url ? `  Report: ${src.url}\n` : '') + `\n`;
+          }
+
+          // Overall verdict
+          const verdictIcon = result.threatLevel === 'malicious' ? '\u26A0\uFE0F'
+            : result.threatLevel === 'suspicious' ? '\u26A0\uFE0F'
+            : '\u2705';
+          response += `Overall Verdict: ${verdictIcon} ${result.threatLevel.toUpperCase()} (confidence: ${result.confidence}%)\n`;
+
+          if (result.malwareFamily) {
+            response += `Malware Family: ${result.malwareFamily}\n`;
+          }
+          if (result.tags.length > 0) {
+            response += `Tags: ${result.tags.join(', ')}\n`;
+          }
+          if (result.firstSeen) {
+            response += `First Seen: ${result.firstSeen.toISOString().split('T')[0]}\n`;
+          }
+          if (result.relatedIocs.length > 0) {
+            response += `Related IOCs: ${result.relatedIocs.slice(0, 5).join(', ')}\n`;
+          }
+
+          response += `\n${result.threatLevel === 'malicious'
+            ? 'Recommendation: Block this indicator via CRA. Investigate any internal systems that communicated with it.'
+            : result.threatLevel === 'suspicious'
+            ? 'Recommendation: Monitor closely. Check internal logs for any connections to this indicator.'
+            : 'No matches in current threat databases. Note: absence of evidence is not evidence of absence.'}\n\n` +
+            `Tip: Ask about "IOC feeds", "threat intel", or "ransomware" for broader intelligence.`;
+
+          const iocMsg: ChatMessage = {
+            id: uid(), timestamp: Date.now(),
+            sender: { id: iocSender.id, name: iocSender.name, type: 'agent', color: iocSender.color },
+            type: 'agent', content: response,
+          };
+          this.addMessage(iocMsg);
+          this.channel.postMessage(iocMsg);
+        } catch {
+          this.hideTyping(iocSender.id);
+          const errMsg: ChatMessage = {
+            id: uid(), timestamp: Date.now(),
+            sender: { id: iocSender.id, name: iocSender.name, type: 'agent', color: iocSender.color },
+            type: 'agent', content: `IOC Lookup for "${escapeHtml(text.trim())}" failed \u2014 service temporarily unavailable. Try again shortly.`,
+          };
+          this.addMessage(errMsg);
+          this.channel.postMessage(errMsg);
+        }
+      }, 800 + Math.random() * 400);
+
+      this.typingTimers.set(iocSender.id, timer as unknown as ReturnType<typeof setTimeout>);
+      return; // IOC lookup takes priority — don't also trigger agents
+    }
+
+    // ── Standard agent routing ──
     const triggered: GatraAgentDef[] = [];
 
     for (const agent of GATRA_AGENTS) {
@@ -1921,9 +2079,9 @@ export class SocChatPanel {
         const delay = 1200 + idx * 1800 + Math.random() * 800;
         this.showTyping(agent);
 
-        const timer = setTimeout(() => {
+        const timer = setTimeout(async () => {
           this.hideTyping(agent.id);
-          const response = generateAgentResponse(agent, text);
+          const response = await generateAgentResponse(agent, text);
           const agentMsg: ChatMessage = {
             id: uid(), timestamp: Date.now(),
             sender: { id: agent.id, name: agent.name, type: 'agent', color: agent.color },
