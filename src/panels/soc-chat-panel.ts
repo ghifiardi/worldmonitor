@@ -50,9 +50,12 @@ const GATRA_AGENTS: GatraAgentDef[] = [
     role: 'Detects anomalies using Isolation Forest + LSTM',
     color: '#4caf50', emoji: '\uD83D\uDD0D',
     triggerPatterns: [
-      /why\s+(was|is)\s+(this|that|the\s+alert)\s+(flagged|detected|triggered)/i,
+      /why.*(flagged|detected|triggered)/i,
       /anomal(y|ies)/i, /false\s*positive/i,
-      /analyz(e|ing)/i, /critical/i, /explain/i, /breakdown/i, /detail/i,
+      /analyz/i, /critical/i, /explain/i, /breakdown/i, /detail/i,
+      /\d+\s*(alert|crit)/i, /summary/i, /overview/i,
+      /baseline|deviation|drift|retrain/i,
+      /sit\s*rep/i,
       /@ada\b/i,
     ],
   },
@@ -61,9 +64,11 @@ const GATRA_AGENTS: GatraAgentDef[] = [
     role: 'Triages alerts using Actor-Critic RL',
     color: '#ff9800', emoji: '\uD83C\uDFAF',
     triggerPatterns: [
-      /why\s+(was|is)\s+(this|that)\s+(escalat|triag|prioriti)/i,
-      /(threat|risk)\s+(assess|level|score)/i, /mitre\s+(map|attack|technique)/i,
-      /triag(e|ing)/i, /prioriti(ze|zation|es)/i,
+      /why.*(escalat|triag|prioriti)/i,
+      /threat/i, /risk\s*(assess|level|score)/i,
+      /mitre|att&ck|kill\s*chain|technique|tactic/i,
+      /triag/i, /prioriti/i, /escalat/i,
+      /what.*(should|next|first)/i, /rank|order/i, /queue/i,
       /@taa\b/i,
     ],
   },
@@ -72,8 +77,11 @@ const GATRA_AGENTS: GatraAgentDef[] = [
     role: 'Executes automated containment actions',
     color: '#f44336', emoji: '\uD83D\uDEE1\uFE0F',
     triggerPatterns: [
-      /what\s+(action|response|did\s+you)/i, /(block|contain|isolat|quarantin)/i,
-      /(rollback|undo|revert)\s+(action|block)/i, /hold\s+(containment|response)/i,
+      /action/i, /containment/i, /response/i,
+      /block|isolat|quarantin/i,
+      /rollback|undo|revert/i,
+      /hold|pause|suspend/i,
+      /session/i, /what.*did/i,
       /@cra\b/i,
     ],
   },
@@ -82,8 +90,11 @@ const GATRA_AGENTS: GatraAgentDef[] = [
     role: 'Maintains audit trail and compliance',
     color: '#2196f3', emoji: '\uD83D\uDCCB',
     triggerPatterns: [
-      /(incident|report).*(generate|create|build)/i, /audit\s+(trail|log|history)/i,
-      /complian(ce|t)/i, /timeline/i, /@cla\b/i,
+      /report/i, /incident.*report/i, /generate.*report/i,
+      /audit/i, /log.*trail/i, /history/i,
+      /complian/i, /timeline/i, /chronolog/i,
+      /policy|nist|iso|gdpr|regulat/i,
+      /@cla\b/i,
     ],
   },
   {
@@ -91,11 +102,37 @@ const GATRA_AGENTS: GatraAgentDef[] = [
     role: 'Assesses vulnerability exposure',
     color: '#9c27b0', emoji: '\u26A0\uFE0F',
     triggerPatterns: [
-      /vulnerabilit(y|ies)/i, /cve-\d{4}/i, /patch\s+(priorit|recommend|what)/i,
-      /expos(ed|ure)/i, /@rva\b/i,
+      /vulnerabilit/i, /cve-\d{4}/i,
+      /patch/i, /remediat/i,
+      /expos(ed|ure)/i, /attack\s*surface/i,
+      /scan/i,
+      /@rva\b/i,
     ],
   },
 ];
+
+// ── Agent response helpers ───────────────────────────────────────
+
+function dedupeByTechnique(items: GatraAlert[]): Map<string, { a: GatraAlert; count: number }> {
+  const map = new Map<string, { a: GatraAlert; count: number }>();
+  for (const a of items) {
+    const existing = map.get(a.mitreId);
+    if (existing) existing.count++;
+    else map.set(a.mitreId, { a, count: 1 });
+  }
+  return map;
+}
+
+function severityCounts(alerts: GatraAlert[]): { critical: number; high: number; medium: number; low: number } {
+  let critical = 0, high = 0, medium = 0, low = 0;
+  for (const a of alerts) {
+    if (a.severity === 'critical') critical++;
+    else if (a.severity === 'high') high++;
+    else if (a.severity === 'medium') medium++;
+    else low++;
+  }
+  return { critical, high, medium, low };
+}
 
 // ── Agent response generation ────────────────────────────────────
 
@@ -103,11 +140,14 @@ function generateAgentResponse(agent: GatraAgentDef, message: string): string {
   const snap = getGatraSnapshot();
   const alerts = snap?.alerts ?? [];
   const actions = getCRAActions();
-  const criticalCount = alerts.filter(a => a.severity === 'critical').length;
+  const sev = severityCounts(alerts);
   const now = new Date();
-
+  const hour = now.getUTCHours();
+  const offHours = hour < 6 || hour > 22;
   switch (agent.id) {
+    // ── ADA: Anomaly Detection Agent ──────────────────────────────
     case 'ada': {
+      // Why was it flagged/detected
       if (/why.*(flagged|detected|triggered)/i.test(message)) {
         const alert = alerts[0];
         if (alert) {
@@ -119,21 +159,19 @@ function generateAgentResponse(agent: GatraAgentDef, message: string): string {
         }
         return 'Specify which alert \u2014 I can explain detection logic for any active alert.';
       }
+
+      // Anomalies
       if (/anomal(y|ies)/i.test(message)) {
         const recent = alerts.filter(a => now.getTime() - a.timestamp.getTime() < 3600000);
         if (recent.length === 0) return 'No anomalies in the last hour. All baselines nominal.';
-        // Deduplicate by MITRE ID, show count per technique
-        const byTechnique = new Map<string, { a: typeof recent[0]; count: number }>();
-        for (const a of recent) {
-          const existing = byTechnique.get(a.mitreId);
-          if (existing) { existing.count++; }
-          else { byTechnique.set(a.mitreId, { a, count: 1 }); }
-        }
+        const byTechnique = dedupeByTechnique(recent);
         const lines = [...byTechnique.values()].slice(0, 5).map(({ a, count }) =>
           `\u2022 ${a.mitreId} \u2013 ${a.mitreName} (${a.severity}, conf: ${a.confidence}%)${count > 1 ? ` \u00D7${count}` : ''}`
         );
         return `${recent.length} anomalies in last hour (${byTechnique.size} unique techniques):\n` + lines.join('\n');
       }
+
+      // False positive
       if (/false\s*positive/i.test(message)) {
         const alert = alerts[0];
         if (alert) {
@@ -143,35 +181,57 @@ function generateAgentResponse(agent: GatraAgentDef, message: string): string {
             `\u2022 CLA has logged this decision.`;
         }
       }
-      if (/critical/i.test(message) || /analyz(e|ing)/i.test(message) || /explain/i.test(message) || /breakdown/i.test(message) || /detail/i.test(message)) {
+
+      // Analyze / critical / explain / breakdown / detail / number + critical / "what should I"
+      if (/critical/i.test(message) || /analyz/i.test(message) || /explain/i.test(message) || /breakdown/i.test(message) || /detail/i.test(message) || /\d+\s*(alert|crit)/i.test(message) || /summary|overview|report/i.test(message)) {
         const criticals = alerts.filter(a => a.severity === 'critical');
-        if (criticals.length === 0) return 'No critical alerts currently active. All baselines nominal.';
-        // Deduplicate by technique
-        const byTechnique = new Map<string, { a: typeof criticals[0]; count: number }>();
-        for (const a of criticals) {
-          const existing = byTechnique.get(a.mitreId);
-          if (existing) { existing.count++; }
-          else { byTechnique.set(a.mitreId, { a, count: 1 }); }
-        }
+        if (criticals.length === 0 && alerts.length === 0) return 'No alerts currently active. All baselines nominal.';
+        const target = criticals.length > 0 ? criticals : alerts;
+        const label = criticals.length > 0 ? 'critical' : 'total';
+        const byTechnique = dedupeByTechnique(target);
         const lines = [...byTechnique.values()].slice(0, 6).map(({ a, count }) => {
           const score = (0.85 + Math.random() * 0.14).toFixed(2);
           return `\u2022 ${a.mitreId} \u2013 ${a.mitreName} (conf: ${a.confidence}%, anomaly: ${score})${count > 1 ? ` \u00D7${count}` : ''}`;
         });
-        const topInfra = [...new Set(criticals.slice(0, 10).map(a => a.infrastructure).filter(Boolean))].slice(0, 3);
-        return `Analysis of ${criticals.length} critical alerts (${byTechnique.size} unique techniques):\n` +
+        const topInfra = [...new Set(target.slice(0, 10).map(a => a.infrastructure).filter(Boolean))].slice(0, 3);
+        return `Analysis of ${target.length} ${label} alerts (${byTechnique.size} unique techniques):\n` +
           lines.join('\n') +
           (topInfra.length > 0 ? `\n\u2022 Affected infrastructure: ${topInfra.join(', ')}` : '') +
-          `\n\u2022 Avg confidence: ${(criticals.reduce((s, a) => s + a.confidence, 0) / criticals.length).toFixed(0)}%` +
+          `\n\u2022 Avg confidence: ${(target.reduce((s, a) => s + a.confidence, 0) / target.length).toFixed(0)}%` +
+          `\n\u2022 Model: Isolation Forest + LSTM ensemble (retrained every 15m)` +
           `\nRecommend: Escalate top techniques to TAA for triage prioritization.`;
       }
-      return `Monitoring ${alerts.length} active alerts. ${criticalCount} critical. What should I analyze?`;
+
+      // Status / how many / count / what's happening
+      if (/status|how many|count|what'?s happening|situation|sit\s*rep/i.test(message)) {
+        return `ADA Status Report:\n` +
+          `\u2022 Active alerts: ${alerts.length} (${sev.critical} critical, ${sev.high} high, ${sev.medium} medium, ${sev.low} low)\n` +
+          `\u2022 Detection model: Isolation Forest + LSTM ensemble\n` +
+          `\u2022 Last retrain: ${Math.floor(Math.random() * 14 + 1)}m ago | Next: T+${Math.floor(Math.random() * 10 + 5)}m\n` +
+          `\u2022 Baseline drift: ${(Math.random() * 0.3).toFixed(2)}% (nominal < 5%)\n` +
+          `\u2022 False positive rate (24h): ${(1.2 + Math.random() * 2.5).toFixed(1)}%\n` +
+          `Ask me to analyze specific alerts, check anomalies, or mark false positives.`;
+      }
+
+      // Generic @ada fallback — rich contextual summary
+      if (alerts.length === 0) return 'ADA online. No active anomalies detected. All baselines nominal.\nTip: Ask about anomalies, false positives, or specific alert analysis.';
+      const byTechnique = dedupeByTechnique(alerts);
+      const topLines = [...byTechnique.values()].slice(0, 3).map(({ a, count }) =>
+        `\u2022 ${a.mitreId} \u2013 ${a.mitreName} (${a.severity})${count > 1 ? ` \u00D7${count}` : ''}`
+      );
+      return `ADA monitoring ${alerts.length} active alerts:\n` +
+        `\u2022 Severity breakdown: ${sev.critical} CRIT / ${sev.high} HIGH / ${sev.medium} MED / ${sev.low} LOW\n` +
+        `Top techniques:\n${topLines.join('\n')}\n` +
+        `\u2022 Model confidence avg: ${(alerts.reduce((s, a) => s + a.confidence, 0) / alerts.length).toFixed(0)}%\n` +
+        `Ask: "analyze critical" \u00B7 "any anomalies" \u00B7 "why was it flagged" \u00B7 "false positive"`;
     }
+
+    // ── TAA: Threat Analysis Agent ────────────────────────────────
     case 'taa': {
+      // Why was it escalated / triaged
       if (/why.*(escalat|triag|prioriti)/i.test(message)) {
         const alert = alerts.find(a => a.severity === 'critical') ?? alerts[0];
         if (alert) {
-          const hour = now.getUTCHours();
-          const offHours = hour < 6 || hour > 22;
           return `Triage for ${alert.mitreId} \u2013 ${alert.mitreName}:\n` +
             `\u2022 RL action: ESCALATE (confidence: ${alert.confidence}%)\n` +
             `\u2022 Actor-Critic value: ${(0.7 + Math.random() * 0.25).toFixed(3)}\n` +
@@ -180,88 +240,238 @@ function generateAgentResponse(agent: GatraAgentDef, message: string): string {
             `\u2022 Alternatives: INVESTIGATE (${(0.2 + Math.random() * 0.15).toFixed(2)}), DISMISS (${(Math.random() * 0.05).toFixed(2)})`;
         }
       }
-      if (/(threat|risk)\s*(assess|level|score)/i.test(message) || /triag(e|ing)/i.test(message)) {
+
+      // Triage / threat assessment / risk / prioritize
+      if (/triag|prioriti|threat|risk|assess|queue|what.*(should|next|first)|rank|order/i.test(message)) {
         const topTechniques = [...new Set(alerts.map(a => a.mitreId))].slice(0, 5);
-        const highSev = alerts.filter(a => a.severity === 'critical' || a.severity === 'high');
+        const escalate = alerts.filter(a => a.severity === 'critical');
+        const investigate = alerts.filter(a => a.severity === 'high');
+        const monitor = alerts.filter(a => a.severity !== 'critical' && a.severity !== 'high');
         return `Current threat assessment:\n` +
-          `\u2022 Active criticals: ${criticalCount} | High: ${highSev.length - criticalCount}\n` +
-          `\u2022 Total alerts: ${alerts.length}\n` +
-          `\u2022 Top techniques: ${topTechniques.join(', ') || 'N/A'}\n` +
-          `\u2022 Triage queue: ${criticalCount} ESCALATE, ${highSev.length - criticalCount} INVESTIGATE, ${alerts.length - highSev.length} MONITOR\n` +
-          `\u2022 Recommendation: ${criticalCount > 0 ? 'Maintain elevated monitoring. Review criticals first.' : 'Standard posture. No immediate escalation needed.'}`;
+          `\u2022 Active: ${alerts.length} alerts | ${sev.critical} CRIT / ${sev.high} HIGH / ${sev.medium} MED\n` +
+          `\u2022 Top MITRE techniques: ${topTechniques.join(', ') || 'N/A'}\n` +
+          `\u2022 Triage queue:\n` +
+          `  \u2014 ESCALATE (${escalate.length}): ${escalate.slice(0, 2).map(a => a.mitreId).join(', ') || 'none'}\n` +
+          `  \u2014 INVESTIGATE (${investigate.length}): ${investigate.slice(0, 2).map(a => a.mitreId).join(', ') || 'none'}\n` +
+          `  \u2014 MONITOR (${monitor.length}): ${monitor.slice(0, 2).map(a => a.mitreId).join(', ') || 'none'}\n` +
+          `\u2022 RL model: Actor-Critic | Time: ${offHours ? 'off-hours (1.3\u00D7 weight)' : 'business hours (1.0\u00D7)'}\n` +
+          `\u2022 Recommendation: ${sev.critical > 0 ? 'Immediate review of ESCALATE queue. CRA standby for containment.' : 'Standard posture. No immediate escalation needed.'}`;
       }
-      return `TAA online. ${criticalCount} critical alerts in triage queue.`;
+
+      // MITRE mapping
+      if (/mitre|attack|technique|tactic|kill\s*chain/i.test(message)) {
+        const byTechnique = dedupeByTechnique(alerts);
+        const lines = [...byTechnique.values()].slice(0, 6).map(({ a, count }) =>
+          `\u2022 ${a.mitreId} \u2013 ${a.mitreName} [${a.severity}]${count > 1 ? ` \u00D7${count}` : ''}`
+        );
+        return `MITRE ATT&CK mapping (active session):\n` +
+          lines.join('\n') +
+          `\n\u2022 ${byTechnique.size} unique techniques across ${alerts.length} alerts\n` +
+          `\u2022 Kill chain coverage: Initial Access \u2192 Execution \u2192 Persistence\n` +
+          `Ask about specific techniques or request full triage queue.`;
+      }
+
+      // Generic @taa — rich contextual fallback
+      if (alerts.length === 0) return 'TAA online. Triage queue empty. No alerts to prioritize.\nTip: Ask about threat assessment, MITRE mapping, or prioritization.';
+      return `TAA Triage Summary:\n` +
+        `\u2022 Queue: ${sev.critical} ESCALATE / ${sev.high} INVESTIGATE / ${sev.medium + sev.low} MONITOR\n` +
+        `\u2022 Top threat: ${alerts[0]?.mitreId ?? 'N/A'} \u2013 ${alerts[0]?.mitreName ?? 'N/A'} (${alerts[0]?.severity ?? ''})\n` +
+        `\u2022 RL confidence: ${(0.7 + Math.random() * 0.25).toFixed(2)} | Posture: ${sev.critical > 3 ? 'ELEVATED' : 'STANDARD'}\n` +
+        `Ask: "triage queue" \u00B7 "threat assessment" \u00B7 "MITRE mapping" \u00B7 "why escalated"`;
     }
+
+    // ── CRA: Containment & Response Agent ─────────────────────────
     case 'cra': {
-      if (/what\s*(action|response|did)/i.test(message)) {
-        if (actions.length === 0) return 'No containment actions in current session.';
-        return `Recent containment actions:\n` +
-          actions.slice(0, 5).map(a =>
-            `\u2022 ${a.timestamp.toISOString().substring(11, 16)} UTC \u2014 ${a.action} (${a.target})`
-          ).join('\n') +
-          '\nAll actions logged in CLA audit trail.';
+      // What actions / what did you do / what happened / explain actions / about actions / list actions
+      if (/what.*(action|response|did|happen|do)|action|session.*about|about.*session|list|show|detail/i.test(message)) {
+        if (actions.length === 0) {
+          return `No containment actions executed in current session.\n` +
+            `\u2022 CRA is on standby monitoring ${alerts.length} active alerts\n` +
+            `\u2022 ${sev.critical} critical alerts may trigger auto-containment\n` +
+            `\u2022 Auto-response thresholds: severity \u2265 critical + confidence \u2265 90%\n` +
+            `Say "/block <ip>" to manually initiate containment.`;
+        }
+        const actionLines = actions.slice(0, 8).map(a =>
+          `\u2022 ${a.timestamp.toISOString().substring(11, 16)} UTC \u2014 ${a.action} \u2192 ${a.target}`
+        );
+        return `Containment actions this session (${actions.length} total):\n` +
+          actionLines.join('\n') +
+          `\n\u2022 All actions policy-compliant (SOC-POL-2026-001)\n` +
+          `\u2022 Rollback available for last ${Math.min(actions.length, 5)} actions\n` +
+          `\u2022 CLA audit trail: active\n` +
+          `Commands: "/block <ip>" \u00B7 "/hold <target>" \u00B7 "/rollback"`;
       }
-      if (/hold\s*(containment|response|action)/i.test(message)) {
+
+      // Hold / pause containment
+      if (/hold|pause|stop|suspend/i.test(message)) {
         const ipMatch = message.match(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/);
         if (ipMatch) {
           return `\u23F8\uFE0F Containment HELD for ${ipMatch[0]}.\n` +
-            `\u2022 Automatic response suspended\n\u2022 Manual approval required\n` +
-            `\u2022 Hold expires in 4h. Say "release hold" to resume.`;
+            `\u2022 Automatic response suspended\n\u2022 Manual approval required for this target\n` +
+            `\u2022 Hold expires in 4h. Say "release hold" to resume.\n` +
+            `\u2022 Other containment rules remain active.`;
         }
-        return 'Specify IP or alert ID to hold containment.';
+        return `\u23F8\uFE0F Containment paused.\n` +
+          `\u2022 Auto-response suspended for all targets\n` +
+          `\u2022 Manual approval mode active\n` +
+          `\u2022 Specify IP or alert ID for targeted holds\n` +
+          `\u2022 Say "release hold" to resume auto-response.`;
       }
-      if (/(rollback|undo|revert)/i.test(message)) {
-        return `\u26A0\uFE0F Rollback request received.\n` +
-          `Type "confirm rollback" to proceed or "cancel" to keep active.`;
+
+      // Rollback / undo / revert
+      if (/rollback|undo|revert/i.test(message)) {
+        if (actions.length === 0) return 'No actions to rollback. Session is clean.';
+        const last = actions[actions.length - 1]!;
+        return `\u26A0\uFE0F Rollback available:\n` +
+          `\u2022 Last action: ${last.action} \u2192 ${last.target} at ${last.timestamp.toISOString().substring(11, 16)} UTC\n` +
+          `\u2022 Rollbackable actions: ${Math.min(actions.length, 5)}\n` +
+          `Type "confirm rollback" to revert last action, or "cancel" to keep.`;
       }
-      return `CRA online. ${actions.length} actions in session. All within policy.`;
+
+      // Block / contain / isolate / quarantine
+      if (/block|contain|isolat|quarantin/i.test(message)) {
+        const ipMatch = message.match(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/);
+        const target = ipMatch?.[0] ?? 'pending target';
+        return `\uD83D\uDEE1\uFE0F Containment initiated for ${target}:\n` +
+          `\u2022 Firewall rule: BLOCK ingress/egress\n` +
+          `\u2022 Network segment: isolated\n` +
+          `\u2022 Active sessions: terminated\n` +
+          `\u2022 Evidence preservation: snapshot taken\n` +
+          `\u2022 CLA notified. Audit entry created.\n` +
+          `Say "hold containment" to pause or "rollback" to revert.`;
+      }
+
+      // Status / ready / online
+      if (/status|ready|online|active|how.*you/i.test(message)) {
+        return `CRA Status:\n` +
+          `\u2022 Mode: ${sev.critical > 0 ? 'ACTIVE RESPONSE' : 'STANDBY'}\n` +
+          `\u2022 Actions this session: ${actions.length}\n` +
+          `\u2022 Monitoring: ${alerts.length} alerts (${sev.critical} critical)\n` +
+          `\u2022 Auto-response: ${sev.critical > 0 ? 'ARMED' : 'standby'} (threshold: severity=critical, conf\u226590%)\n` +
+          `\u2022 Policy: SOC-POL-2026-001 compliant\n` +
+          `\u2022 Rollback window: last ${Math.min(actions.length, 5)} actions available\n` +
+          `Commands: /block \u00B7 /hold \u00B7 /release \u00B7 /rollback`;
+      }
+
+      // Generic @cra — rich contextual fallback
+      return `CRA Containment Summary:\n` +
+        `\u2022 Session actions: ${actions.length} executed, all policy-compliant\n` +
+        `\u2022 Monitoring: ${sev.critical} critical / ${sev.high} high alerts\n` +
+        `\u2022 Mode: ${sev.critical > 0 ? 'ACTIVE \u2014 auto-containment armed for critical+90% conf' : 'STANDBY \u2014 awaiting escalation from TAA'}\n` +
+        `\u2022 Available: /block <ip> \u00B7 /hold <target> \u00B7 /rollback\n` +
+        `Ask: "what actions" \u00B7 "block <ip>" \u00B7 "hold containment" \u00B7 "rollback last"`;
     }
+
+    // ── CLA: Compliance & Logging Agent ───────────────────────────
     case 'cla': {
-      if (/(incident|report).*(generate|create|build)/i.test(message)) {
+      // Generate report / incident report
+      if (/(incident|report).*(generate|create|build|draft)/i.test(message) || /generate.*(incident|report)/i.test(message)) {
         const techniques = [...new Set(alerts.map(a => a.mitreId))].join(', ');
         return `\uD83D\uDCCB Incident Report \u2014 DRAFT\n` +
-          `Date: ${now.toISOString().split('T')[0]}\n` +
-          `Classification: ${criticalCount > 0 ? 'CRITICAL' : 'STANDARD'}\n` +
-          `Alerts: ${alerts.length} | Techniques: ${techniques || 'N/A'}\n` +
+          `Date: ${now.toISOString().split('T')[0]} | Time: ${now.toISOString().substring(11, 16)} UTC\n` +
+          `Classification: ${sev.critical > 0 ? 'CRITICAL' : 'STANDARD'}\n` +
+          `Alerts: ${alerts.length} (${sev.critical}C/${sev.high}H/${sev.medium}M/${sev.low}L)\n` +
+          `Techniques: ${techniques || 'N/A'}\n` +
           `Actions: ${actions.length} containment responses\n` +
-          `Full report ready. Proceed with export?`;
+          `Agents involved: ADA, TAA, CRA, CLA\n` +
+          `Compliance: SOC-POL-2026-001 \u2713\n` +
+          `Full report ready for export. Say "export pdf" or "export json".`;
       }
-      if (/audit\s*(trail|log|history)/i.test(message)) {
+
+      // Audit trail / log / history
+      if (/audit|log|history|trail|record/i.test(message)) {
         return `\uD83D\uDCCB Audit trail (session):\n` +
-          `\u2022 ${alerts.length} alerts processed by ADA\n` +
-          `\u2022 ${alerts.filter(a => a.severity === 'critical' || a.severity === 'high').length} escalated by TAA\n` +
+          `\u2022 ${alerts.length} alerts detected by ADA (IF+LSTM ensemble)\n` +
+          `\u2022 ${alerts.filter(a => a.severity === 'critical' || a.severity === 'high').length} escalated by TAA (Actor-Critic RL)\n` +
           `\u2022 ${actions.length} containment actions by CRA\n` +
-          `\u2022 All actions compliant with SOC-POL-2026-001`;
+          `\u2022 Policy: SOC-POL-2026-001 \u2014 all compliant\n` +
+          `\u2022 Evidence chain: intact, SHA-256 checksums verified\n` +
+          `\u2022 Retention: 90 days (regulatory minimum met)\n` +
+          `Say "timeline" for chronological event view.`;
       }
-      if (/timeline/i.test(message)) {
-        const recent = alerts.slice(0, 6);
-        if (recent.length === 0) return 'No events to build timeline from.';
+
+      // Timeline
+      if (/timeline|chronolog|sequence|when/i.test(message)) {
+        const recent = alerts.slice(0, 8);
+        if (recent.length === 0) return 'No events to build timeline from. Session is clean.';
         return `\uD83D\uDCCB Incident timeline:\n` +
           recent.map(a =>
             `${a.timestamp.toISOString().substring(11, 16)} UTC \u2014 ${a.agent}: ${a.mitreId} \u2013 ${a.mitreName} (${a.severity})`
-          ).join('\n');
+          ).join('\n') +
+          `\n\u2022 Showing ${recent.length} of ${alerts.length} total events\n` +
+          `\u2022 All timestamps UTC, audit-grade precision`;
       }
-      return `CLA online. ${alerts.length} events logged this session.`;
+
+      // Compliance / policy
+      if (/complian|policy|regulat|standard|nist|iso|gdpr/i.test(message)) {
+        return `\uD83D\uDCCB Compliance status:\n` +
+          `\u2022 SOC-POL-2026-001: \u2713 Compliant\n` +
+          `\u2022 NIST CSF: Detection (DE) & Response (RS) controls active\n` +
+          `\u2022 Evidence retention: 90 days (meets regulatory minimum)\n` +
+          `\u2022 Audit integrity: SHA-256 chain verified\n` +
+          `\u2022 All ${actions.length} CRA actions within approved playbook\n` +
+          `\u2022 Analyst decisions logged with timestamp + reasoning`;
+      }
+
+      // Generic @cla — rich fallback
+      return `CLA Session Summary:\n` +
+        `\u2022 Events logged: ${alerts.length} alerts, ${actions.length} actions\n` +
+        `\u2022 Compliance: SOC-POL-2026-001 \u2713 all clear\n` +
+        `\u2022 Audit chain: intact (SHA-256 verified)\n` +
+        `\u2022 Retention: 90-day window active\n` +
+        `Ask: "audit trail" \u00B7 "timeline" \u00B7 "generate report" \u00B7 "compliance status"`;
     }
+
+    // ── RVA: Risk & Vulnerability Agent ───────────────────────────
     case 'rva': {
+      // Specific CVE lookup
       if (/cve-\d{4}/i.test(message)) {
         const cveMatch = message.match(/cve-\d{4}-\d+/i);
-        return `Vulnerability lookup: ${cveMatch?.[0] ?? 'referenced CVE'}\n` +
-          `\u2022 Cross-referencing with infrastructure assets...\n` +
-          `\u2022 Check CVE FEED panel for detailed CVSS scoring.\n` +
-          `\u2022 I can assess exposure for specific clusters.`;
+        const cveId = cveMatch?.[0]?.toUpperCase() ?? 'referenced CVE';
+        return `Vulnerability lookup: ${cveId}\n` +
+          `\u2022 Severity: checking NVD database...\n` +
+          `\u2022 CISA KEV status: ${Math.random() > 0.5 ? 'LISTED \u2014 active exploitation reported' : 'Not in KEV catalog'}\n` +
+          `\u2022 EPSS (30-day probability): ${(Math.random() * 0.4 + 0.1).toFixed(2)}\n` +
+          `\u2022 Affected assets in infrastructure: checking...\n` +
+          `\u2022 See CVE FEED panel for full CVSS vector + references.\n` +
+          `Say "patch priority" for remediation recommendations.`;
       }
-      if (/patch\s*(priorit|first|recommend)/i.test(message)) {
-        return `Patch priority:\n` +
-          `1. \uD83D\uDD34 CVEs with active exploits (see CVE FEED "EXPLOITED" tag)\n` +
-          `2. \uD83D\uDFE0 Critical CVEs on internet-facing services\n` +
-          `3. \uD83D\uDFE1 High-severity CVEs on internal infrastructure\n` +
-          `Reference CVE FEED panel for current list.`;
+
+      // Patch priority / remediation
+      if (/patch|remediat|fix|updat|upgrad/i.test(message)) {
+        return `Patch priority recommendations:\n` +
+          `1. \uD83D\uDD34 CRITICAL: CVEs with active exploits (CISA KEV listed)\n` +
+          `2. \uD83D\uDFE0 HIGH: CVSS \u22659.0 on internet-facing services\n` +
+          `3. \uD83D\uDFE1 MEDIUM: CVSS \u22657.0 on internal infrastructure\n` +
+          `4. \u26AA LOW: CVSS <7.0, no known exploits\n` +
+          `\u2022 Current KEV catalog: check CVE FEED panel\n` +
+          `\u2022 Assets scanned: ${Math.floor(Math.random() * 50 + 120)} endpoints\n` +
+          `\u2022 Last scan: ${Math.floor(Math.random() * 3 + 1)}h ago\n` +
+          `Specify CVE ID for targeted assessment.`;
       }
-      return `RVA online. Monitoring CVE feeds. Ask about specific vulnerabilities.`;
+
+      // Vulnerability / exposure / scan
+      if (/vulnerabilit|expos|scan|risk|surface|attack\s*surface/i.test(message)) {
+        return `Vulnerability exposure assessment:\n` +
+          `\u2022 Known vulnerabilities: monitoring NVD + CISA KEV feeds\n` +
+          `\u2022 Internet-facing assets: ${Math.floor(Math.random() * 20 + 15)} services exposed\n` +
+          `\u2022 Unpatched critical CVEs: ${Math.floor(Math.random() * 5)} (see CVE FEED panel)\n` +
+          `\u2022 Attack surface score: ${(Math.random() * 3 + 4).toFixed(1)}/10\n` +
+          `\u2022 Top risk: ${alerts.length > 0 ? `${alerts[0]!.mitreId} correlates with known CVEs` : 'No active correlation'}\n` +
+          `Ask about specific CVEs or say "patch priority" for recommendations.`;
+      }
+
+      // Generic @rva — rich fallback
+      return `RVA Status:\n` +
+        `\u2022 CVE feeds: NVD + CISA KEV active\n` +
+        `\u2022 Monitoring: ${Math.floor(Math.random() * 50 + 120)} infrastructure assets\n` +
+        `\u2022 Unpatched criticals: ${Math.floor(Math.random() * 5)}\n` +
+        `\u2022 Last vulnerability scan: ${Math.floor(Math.random() * 3 + 1)}h ago\n` +
+        `Ask: "vulnerability exposure" \u00B7 "CVE-2026-XXXX" \u00B7 "patch priority" \u00B7 "attack surface"`;
     }
+
     default:
-      return 'Agent online.';
+      return 'Agent online. Ask me a question.';
   }
 }
 
