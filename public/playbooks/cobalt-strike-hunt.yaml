@@ -1,0 +1,189 @@
+apiVersion: gatra/v1
+kind: Playbook
+metadata:
+  name: cobalt-strike-hunt
+  displayName: Cobalt Strike Beacon Hunt
+  description: >
+    Proactive threat hunt for Cobalt Strike beacon activity. Collects IOCs,
+    sweeps network telemetry, analyzes beacon patterns, detects lateral
+    movement, attributes to APT groups, and generates a full hunt report.
+  author: GATRA SOC
+  version: "1.0"
+  tags:
+    - cobalt-strike
+    - beacon
+    - apt
+    - c2
+    - threat-hunt
+  mitre:
+    tactics:
+      - TA0011  # Command and Control
+      - TA0008  # Lateral Movement
+      - TA0003  # Persistence
+    techniques:
+      - T1071.001  # Application Layer Protocol: Web
+      - T1095      # Non-Application Layer Protocol
+      - T1572      # Protocol Tunneling
+      - T1021.002  # SMB/Windows Admin Shares
+      - T1055      # Process Injection
+      - T1059.001  # PowerShell
+  severity: CRITICAL
+  estimatedMinutes: 20
+  category: hunt
+
+spec:
+  variables:
+    - name: target_iocs
+      type: string
+      description: Known Cobalt Strike IOCs (IPs, domains, hashes)
+      required: true
+    - name: time_range
+      type: string
+      description: Lookback period for the hunt
+      required: false
+      default: "7d"
+
+  steps:
+    - id: collect_iocs
+      name: IOC Collection
+      description: >
+        Provide known Cobalt Strike indicators — IP addresses, domain names,
+        beacon hashes, or JA3/JA3S fingerprints you want to hunt for.
+      agent: ioc
+      action: "Analyze the following Cobalt Strike indicators: {{target_iocs}}"
+      input:
+        source: analyst
+        prompt: "Enter Cobalt Strike IOCs (IPs, domains, hashes, JA3 fingerprints):"
+      output:
+        name: ioc_analysis
+        format: json
+      onFailure: continue
+
+    - id: network_sweep
+      name: Network Telemetry Sweep
+      description: >
+        ADA scans network flow data and DNS logs for communication patterns
+        matching known Cobalt Strike C2 profiles — default 60-second beaconing,
+        HTTP GET/POST malleable profiles, and DNS-over-HTTPS tunneling.
+      agent: ada
+      action: >
+        Analyze network telemetry for Cobalt Strike beacon patterns.
+        Look for: periodic beaconing (default ~60s jitter), HTTP GET/POST C2
+        profiles, DNS tunneling, and connections to these IOCs: {{ioc_analysis}}.
+        Check for malleable C2 profile indicators and named pipe patterns.
+      output:
+        name: network_findings
+        format: text
+      onFailure: continue
+
+    - id: beacon_analysis
+      name: Beacon Pattern Analysis
+      description: >
+        Deep analysis of suspected beacon communications — jitter calculation,
+        sleep timers, watermark extraction, and malleable profile identification.
+      agent: ada
+      action: >
+        Perform deep beacon analysis on the network findings: {{network_findings}}.
+        Calculate beacon intervals and jitter percentages. Identify sleep timers,
+        watermarks, and malleable C2 profiles. Check for staged vs stageless
+        payloads and determine the beacon type (HTTP, HTTPS, DNS, SMB).
+      output:
+        name: beacon_details
+        format: text
+      onFailure: continue
+
+    - id: lateral_movement
+      name: Lateral Movement Detection
+      description: >
+        Scan for lateral movement indicators — SMB named pipes, PsExec usage,
+        WMI execution, service creation, and pass-the-hash patterns.
+      agent: ada
+      action: >
+        Detect lateral movement associated with Cobalt Strike activity.
+        Look for: named pipe beacons (\\.\pipe\msagent_*), PsExec service
+        installations, WMI process creation, DCOM lateral movement, token
+        impersonation, and Golden Ticket / pass-the-hash patterns.
+        Prior findings: {{beacon_details}}
+      output:
+        name: lateral_findings
+        format: text
+      onFailure: continue
+
+    - id: apt_attribution
+      name: APT Attribution & Campaign Correlation
+      description: >
+        TAA correlates findings with known APT groups that use Cobalt Strike,
+        checks dark web intelligence for related campaigns, and maps to
+        threat actor profiles.
+      agent: taa
+      action: >
+        Attribute this Cobalt Strike activity to known threat actors.
+        Correlate these findings with APT groups known to use Cobalt Strike:
+        APT29, APT41, FIN7, FIN12, Wizard Spider, Sandworm.
+        IOC analysis: {{ioc_analysis}}
+        Beacon details: {{beacon_details}}
+        Lateral movement: {{lateral_findings}}
+      output:
+        name: attribution
+        format: text
+      onFailure: continue
+
+    - id: containment_decision
+      name: Containment Decision
+      description: >
+        Based on findings, CRA recommends containment actions. Analyst
+        must approve before any containment is executed.
+      agent: cra
+      action: >
+        Recommend containment actions for the identified Cobalt Strike activity.
+        Consider: network isolation of affected hosts, firewall rules to block
+        C2 IPs/domains, DNS sinkholing, credential rotation for compromised
+        accounts. Attribution: {{attribution}}. Lateral movement: {{lateral_findings}}.
+      input:
+        source: analyst
+        prompt: "Review containment recommendations. Type 'approve' to proceed or describe modifications:"
+      output:
+        name: containment_plan
+        format: text
+      onFailure: continue
+
+    - id: mitre_mapping
+      name: MITRE ATT&CK Mapping
+      description: >
+        Map all observed TTPs to the MITRE ATT&CK framework for comprehensive
+        coverage analysis.
+      agent: taa
+      action: >
+        Map the following findings to MITRE ATT&CK techniques and tactics.
+        Provide a complete TTP matrix for this Cobalt Strike hunt.
+        Beacon: {{beacon_details}}
+        Lateral movement: {{lateral_findings}}
+        Attribution: {{attribution}}
+        Containment: {{containment_plan}}
+      output:
+        name: mitre_map
+        format: text
+      onFailure: continue
+
+    - id: report
+      name: Hunt Report Generation
+      description: >
+        CLA compiles all findings into a structured threat hunt report with
+        executive summary, technical details, IOCs, and recommendations.
+      agent: cla
+      action: >
+        Generate a comprehensive Cobalt Strike threat hunt report.
+        Include: Executive Summary, Timeline, IOCs Found, Beacon Analysis,
+        Lateral Movement Findings, Attribution, MITRE Mapping, Containment
+        Actions, and Recommendations.
+        IOCs: {{ioc_analysis}}
+        Network: {{network_findings}}
+        Beacons: {{beacon_details}}
+        Lateral: {{lateral_findings}}
+        Attribution: {{attribution}}
+        MITRE: {{mitre_map}}
+        Containment: {{containment_plan}}
+      output:
+        name: hunt_report
+        format: text
+      onFailure: continue

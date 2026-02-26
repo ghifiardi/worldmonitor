@@ -1,0 +1,232 @@
+apiVersion: gatra/v1
+kind: Playbook
+metadata:
+  name: ransomware-response
+  displayName: Ransomware Incident Response
+  description: >
+    NIST 800-61 aligned ransomware incident response playbook. Covers initial
+    triage, immediate containment, scope assessment, IOC extraction, attribution,
+    initial access vector analysis, breach notification, recovery planning,
+    and full incident report generation.
+  author: GATRA SOC
+  version: "1.0"
+  tags:
+    - ransomware
+    - incident-response
+    - nist-800-61
+    - encryption
+    - extortion
+  mitre:
+    tactics:
+      - TA0040  # Impact
+      - TA0010  # Exfiltration
+      - TA0008  # Lateral Movement
+      - TA0006  # Credential Access
+      - TA0001  # Initial Access
+    techniques:
+      - T1486  # Data Encrypted for Impact
+      - T1490  # Inhibit System Recovery
+      - T1489  # Service Stop
+      - T1021  # Remote Services
+      - T1078  # Valid Accounts
+      - T1566  # Phishing
+  severity: CRITICAL
+  estimatedMinutes: 45
+  category: respond
+
+spec:
+  variables:
+    - name: incident_details
+      type: string
+      description: Initial incident details — affected systems, ransom note, timeline
+      required: true
+    - name: recovery_strategy
+      type: string
+      description: Analyst's recovery preferences and priorities
+      required: false
+
+  steps:
+    - id: initial_triage
+      name: Initial Triage
+      description: >
+        Provide initial incident details — which systems are affected, when
+        encryption was first noticed, any ransom notes or extensions observed,
+        and current business impact.
+      agent: ada
+      action: "Perform initial triage of this ransomware incident: {{incident_details}}"
+      input:
+        source: analyst
+        prompt: "Describe the ransomware incident (affected systems, timeline, ransom note text, file extensions):"
+      output:
+        name: triage
+        format: text
+      onFailure: continue
+
+    - id: immediate_containment
+      name: "Immediate Containment (NIST 800-61 Phase 2)"
+      description: >
+        CRA recommends immediate containment actions per NIST 800-61 —
+        network isolation, disabling compromised accounts, preserving
+        evidence. Analyst must approve before execution.
+      agent: cra
+      action: >
+        Recommend immediate containment for this ransomware incident per
+        NIST 800-61 Containment, Eradication, and Recovery phase.
+        Priority actions: isolate affected network segments, disable
+        compromised accounts, preserve forensic evidence (memory dumps,
+        disk images), block C2 communications, disable lateral movement
+        paths (SMB, RDP, WMI).
+        Triage: {{triage}}
+      input:
+        source: analyst
+        prompt: "Review containment actions. Type 'approve' to execute or describe modifications:"
+      output:
+        name: containment
+        format: text
+      onFailure: abort
+
+    - id: scope_assessment
+      name: Scope Assessment
+      description: >
+        ADA performs comprehensive scope assessment — identifying all
+        affected systems, shared drives, backup status, and the blast
+        radius of the encryption.
+      agent: ada
+      action: >
+        Assess the full scope of this ransomware incident.
+        Determine: total affected endpoints, encrypted file shares,
+        Active Directory impact, backup integrity (are backups encrypted
+        or intact?), data exfiltration indicators, business-critical
+        systems affected, estimated recovery time.
+        Triage: {{triage}}
+        Containment: {{containment}}
+      output:
+        name: scope
+        format: text
+      onFailure: continue
+
+    - id: ioc_extraction
+      name: IOC Extraction
+      description: >
+        TAA extracts all indicators of compromise — ransomware binary
+        hashes, C2 addresses, ransom note patterns, encryption extensions,
+        and correlates with known ransomware families.
+      agent: taa
+      action: >
+        Extract all IOCs from this ransomware incident and correlate with
+        known families. Identify: ransomware binary hashes, C2 IP/domains,
+        ransom note template (match to family), file extensions, encryption
+        algorithm indicators, cryptocurrency wallet addresses.
+        Check against ransomware.live and ThreatFox databases.
+        Triage: {{triage}}
+        Scope: {{scope}}
+      output:
+        name: iocs
+        format: text
+      onFailure: continue
+
+    - id: attribution
+      name: Ransomware Attribution
+      description: >
+        TAA attributes the attack to a specific ransomware group based on
+        IOCs, TTPs, ransom note style, and leak site activity.
+      agent: taa
+      action: >
+        Attribute this ransomware attack to a specific group.
+        Cross-reference IOCs with known groups: LockBit, BlackCat/ALPHV,
+        Cl0p, Royal, Play, BianLian, Akira, Black Basta, Rhysida, Medusa.
+        Check ransomware leak sites for related victim postings.
+        Assess: RaaS affiliate vs core group, historical targeting patterns,
+        known decryptor availability.
+        IOCs: {{iocs}}
+        Scope: {{scope}}
+      output:
+        name: attribution
+        format: text
+      onFailure: continue
+
+    - id: initial_access
+      name: Initial Access Vector Analysis
+      description: >
+        RVA investigates the initial access vector — how the attacker
+        gained entry (phishing, exploit, RDP, VPN, supply chain).
+      agent: rva
+      action: >
+        Investigate the initial access vector for this ransomware attack.
+        Check: recent phishing emails, VPN/RDP brute force logs, exploited
+        vulnerabilities (recent CVEs for edge devices), compromised
+        credentials, supply chain indicators, initial payload delivery
+        method.
+        Attribution: {{attribution}}
+        Triage: {{triage}}
+      output:
+        name: access_vector
+        format: text
+      onFailure: continue
+
+    - id: breach_notification
+      name: Breach Notification Assessment
+      description: >
+        CLA assesses regulatory notification requirements based on data
+        types affected and applicable regulations (GDPR, HIPAA, state laws).
+      agent: cla
+      action: >
+        Assess breach notification requirements for this ransomware incident.
+        Consider: data types encrypted/exfiltrated (PII, PHI, financial),
+        applicable regulations (GDPR 72-hour rule, HIPAA, state breach
+        notification laws, SEC cyber disclosure rules), notification
+        timelines, required parties (regulators, affected individuals,
+        law enforcement).
+        Scope: {{scope}}
+        Attribution: {{attribution}}
+      output:
+        name: notification
+        format: text
+      onFailure: continue
+
+    - id: recovery_planning
+      name: Recovery Planning
+      description: >
+        Based on all findings, develop a recovery plan. Analyst provides
+        input on recovery priorities and business constraints.
+      agent: cra
+      action: >
+        Develop a recovery plan for this ransomware incident.
+        Consider: backup restoration timeline, system rebuild priority,
+        credential rotation plan, security hardening before reconnection,
+        monitoring plan for re-infection, communication plan.
+        Analyst input: {{recovery_strategy}}
+        Scope: {{scope}}
+        Access vector: {{access_vector}}
+      input:
+        source: analyst
+        prompt: "Describe recovery priorities (critical systems, acceptable downtime, backup availability):"
+      output:
+        name: recovery_plan
+        format: text
+      onFailure: continue
+
+    - id: incident_report
+      name: "Incident Report (NIST 800-61 Phase 4)"
+      description: >
+        CLA generates a comprehensive incident report per NIST 800-61
+        Post-Incident Activity phase, including lessons learned.
+      agent: cla
+      action: >
+        Generate a comprehensive ransomware incident report per NIST 800-61.
+        Include: Executive Summary, Incident Timeline, Scope & Impact,
+        IOCs, Attribution, Initial Access Vector, Containment Actions,
+        Recovery Plan, Breach Notification Status, MITRE ATT&CK Mapping,
+        Lessons Learned, and Security Improvement Recommendations.
+        Triage: {{triage}}
+        Containment: {{containment}}
+        Scope: {{scope}}
+        IOCs: {{iocs}}
+        Attribution: {{attribution}}
+        Access vector: {{access_vector}}
+        Notification: {{notification}}
+        Recovery: {{recovery_plan}}
+      output:
+        name: incident_report
+        format: text
+      onFailure: continue

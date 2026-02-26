@@ -1,0 +1,142 @@
+apiVersion: gatra/v1
+kind: Playbook
+metadata:
+  name: zero-trust-assessment
+  displayName: Zero Trust Maturity Assessment
+  description: >
+    Assesses the organization's Zero Trust maturity across five pillars —
+    Identity, Network, Endpoint, Data, and Visibility. Generates a maturity
+    scorecard with actionable improvement recommendations.
+  author: GATRA SOC
+  version: "1.0"
+  tags:
+    - zero-trust
+    - assessment
+    - maturity
+    - nist
+    - governance
+  mitre:
+    tactics:
+      - TA0005  # Defense Evasion
+      - TA0006  # Credential Access
+      - TA0007  # Discovery
+    techniques:
+      - T1078  # Valid Accounts
+      - T1046  # Network Service Scanning
+      - T1082  # System Information Discovery
+      - T1083  # File and Directory Discovery
+  severity: INFO
+  estimatedMinutes: 30
+  category: assess
+
+spec:
+  variables:
+    - name: organization_context
+      type: string
+      description: Organization size, industry, and current security stack
+      required: false
+      default: "Not specified"
+
+  steps:
+    - id: identity_access
+      name: "Identity & Access Controls"
+      description: >
+        RVA evaluates identity and access management posture — MFA coverage,
+        conditional access policies, privileged access management, SSO
+        adoption, and identity governance.
+      agent: rva
+      action: >
+        Assess Zero Trust maturity for the Identity pillar.
+        Evaluate: MFA enforcement coverage (percentage of accounts), conditional
+        access policies (risk-based, device compliance, location), privileged
+        access management (JIT/JEA, PAM solution), SSO adoption rate, identity
+        governance (access reviews, lifecycle management), passwordless
+        authentication adoption, identity threat detection (ITDR).
+        Rate maturity: Traditional / Initial / Advanced / Optimal.
+      output:
+        name: identity_assessment
+        format: text
+      onFailure: continue
+
+    - id: network_segmentation
+      name: Network Segmentation & Micro-segmentation
+      description: >
+        CRA evaluates network architecture — micro-segmentation, software-defined
+        perimeter, encrypted communications, and network access controls.
+      agent: cra
+      action: >
+        Assess Zero Trust maturity for the Network pillar.
+        Evaluate: network segmentation (flat vs segmented vs micro-segmented),
+        software-defined perimeter (SDP/ZTNA) adoption, east-west traffic
+        inspection, encrypted communications (TLS 1.3 adoption, mTLS),
+        DNS security, DDoS protection, network access control (NAC/802.1X).
+        Rate maturity: Traditional / Initial / Advanced / Optimal.
+        Identity findings: {{identity_assessment}}
+      output:
+        name: network_assessment
+        format: text
+      onFailure: continue
+
+    - id: endpoint_posture
+      name: Endpoint Security Posture
+      description: >
+        RVA evaluates endpoint security — EDR coverage, device compliance,
+        patch management, application control, and mobile device management.
+      agent: rva
+      action: >
+        Assess Zero Trust maturity for the Endpoint/Device pillar.
+        Evaluate: EDR/XDR coverage and detection rate, device compliance
+        checking (health attestation), patch management SLA and coverage,
+        application allowlisting/control, mobile device management (MDM/MAM),
+        BYOD security controls, firmware/hardware security (TPM, Secure Boot),
+        device inventory completeness.
+        Rate maturity: Traditional / Initial / Advanced / Optimal.
+        Network findings: {{network_assessment}}
+      output:
+        name: endpoint_assessment
+        format: text
+      onFailure: continue
+
+    - id: data_protection
+      name: Data Protection & Classification
+      description: >
+        CLA evaluates data security — classification, DLP, encryption at
+        rest and in transit, data governance, and privacy controls.
+      agent: cla
+      action: >
+        Assess Zero Trust maturity for the Data pillar.
+        Evaluate: data classification scheme (automated vs manual), Data Loss
+        Prevention (DLP) coverage and effectiveness, encryption at rest
+        (database, file, disk), encryption in transit (TLS everywhere),
+        data governance program, data residency compliance, backup encryption
+        and immutability, secrets management (vault adoption), database
+        activity monitoring.
+        Rate maturity: Traditional / Initial / Advanced / Optimal.
+        Endpoint findings: {{endpoint_assessment}}
+      output:
+        name: data_assessment
+        format: text
+      onFailure: continue
+
+    - id: maturity_report
+      name: Zero Trust Maturity Report
+      description: >
+        CLA compiles all pillar assessments into a comprehensive maturity
+        scorecard with overall rating, gap analysis, and prioritized
+        improvement roadmap.
+      agent: cla
+      action: >
+        Generate a comprehensive Zero Trust Maturity Assessment Report.
+        Include: Executive Summary, Maturity Scorecard (all 5 pillars rated
+        Traditional/Initial/Advanced/Optimal), Overall Maturity Level,
+        Gap Analysis (critical gaps per pillar), Strengths, Risk Areas,
+        and Prioritized Improvement Roadmap (Quick Wins 0-3 months,
+        Medium-term 3-12 months, Strategic 12+ months).
+        Identity: {{identity_assessment}}
+        Network: {{network_assessment}}
+        Endpoint: {{endpoint_assessment}}
+        Data: {{data_assessment}}
+      output:
+        name: maturity_report
+        format: text
+      onFailure: continue

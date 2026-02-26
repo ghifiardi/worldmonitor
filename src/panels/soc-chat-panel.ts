@@ -12,6 +12,8 @@ import { getGatraSnapshot, getAlerts, getAgentStatus, getCRAActions } from '@/ga
 import { getCachedCVEFeed } from '@/services/cve-feed';
 import { lookupIoC, getRecentThreats } from '@/services/ioc-lookup';
 import { fetchRansomwareVictims, computeRansomwareStats } from '@/services/ransomware-tracker';
+import { PlaybookEngine, loadPlaybookCatalog, getCatalog } from '@/services/playbook-engine';
+import type { PlaybookDef } from '@/services/playbook-engine';
 import type { GatraAlert, IoCType } from '@/types';
 
 // ── Types ────────────────────────────────────────────────────────
@@ -1634,6 +1636,13 @@ function processCommand(input: string): string | null {
       `/block <ip> \u00B7 /unblock <ip> \u00B7 /hold <target> \u00B7 /release <target>\n` +
       `/escalate <alert> \u00B7 /dismiss <alert> \u00B7 /investigate <alert>\n` +
       `/fp <alert> \u00B7 /report \u00B7 /status \u00B7 /help\n\n` +
+      `Playbooks:\n` +
+      `/playbooks \u2014 list available playbooks\n` +
+      `/hunt <name> \u2014 start a threat hunt playbook\n` +
+      `/respond <name> \u2014 start an incident response playbook\n` +
+      `/assess <name> \u2014 start a security assessment playbook\n` +
+      `/playbook <name> \u2014 start any playbook by exact name\n` +
+      `/abort \u2014 stop a running playbook\n\n` +
       `GATRA Agents: @ADA @TAA @CRA @CLA @RVA\n\n` +
       `Cybersecurity topics (ask anything):\n` +
       `  malware \u00B7 phishing \u00B7 ransomware \u00B7 APT \u00B7 zero trust\n` +
@@ -1883,6 +1892,7 @@ export class SocChatPanel {
   private getMapCenter: (() => { lat: number; lon: number; zoom: number } | null) | null = null;
   private flyToCoords: ((lat: number, lng: number, zoom: number) => void) | null = null;
   private typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private playbookEngine = new PlaybookEngine();
 
   constructor() {
     injectCSS();
@@ -1966,6 +1976,31 @@ export class SocChatPanel {
 
     // Welcome message
     this.addSystemMessage('SOC COMMS initialized. 5 GATRA agents online. Type /help for commands.');
+
+    // Bind PlaybookEngine callbacks
+    this.playbookEngine.bind(
+      (senderId, senderName, senderColor, content, type) => {
+        const msgType = type === 'input_prompt' ? 'system' as const : type === 'agent' ? 'agent' as const : 'system' as const;
+        const msg: ChatMessage = {
+          id: uid(), timestamp: Date.now(),
+          sender: { id: senderId, name: senderName, type: type === 'agent' ? 'agent' : 'system', color: senderColor },
+          type: msgType, content,
+        };
+        this.addMessage(msg);
+      },
+      async (agentId, prompt) => {
+        const agent = GATRA_AGENTS.find(a => a.id === agentId);
+        if (!agent) {
+          // IOC or SOC-KB — use a synthetic agent def
+          const synth: GatraAgentDef = {
+            id: agentId, name: agentId.toUpperCase(), fullName: agentId,
+            role: '', color: '#888', emoji: '', triggerPatterns: [],
+          };
+          return generateAgentResponse(synth, prompt);
+        }
+        return generateAgentResponse(agent, prompt);
+      },
+    );
   }
 
   // ── Map integration ────────────────────────────────────────────
@@ -2019,6 +2054,34 @@ export class SocChatPanel {
     if (!text) return;
     this.inputEl.value = '';
 
+    // ── Playbook waiting for analyst input — intercept first ──
+    if (this.playbookEngine.isWaitingInput()) {
+      this.addMessage({
+        id: uid(), timestamp: Date.now(), sender: this.analystSender,
+        type: 'text', content: text,
+      });
+      this.playbookEngine.handleInput(text);
+      return;
+    }
+
+    // ── Playbook slash commands ──
+    if (text.startsWith('/')) {
+      const pbResult = this.handlePlaybookCommand(text);
+      if (pbResult !== null) {
+        this.addMessage({
+          id: uid(), timestamp: Date.now(), sender: this.analystSender,
+          type: 'text', content: text,
+        });
+        if (pbResult === '__async__') return; // Handled asynchronously (e.g. /hunt starts playbook)
+        this.addMessage({
+          id: uid(), timestamp: Date.now(),
+          sender: { id: 'system', name: 'SYSTEM', type: 'system', color: '#888' },
+          type: 'command_response', content: pbResult,
+        });
+        return;
+      }
+    }
+
     // Check for /command
     const cmdResponse = processCommand(text);
     if (cmdResponse !== null) {
@@ -2050,6 +2113,80 @@ export class SocChatPanel {
 
     // Hide alert picker if open
     if (this.alertPickerVisible) this.toggleAlertPicker();
+  }
+
+  // ── Playbook commands ─────────────────────────────────────────
+
+  private handlePlaybookCommand(input: string): string | null {
+    const parts = input.slice(1).split(' ');
+    const cmd = parts[0]!.toLowerCase();
+    const args = parts.slice(1).join(' ').trim();
+
+    switch (cmd) {
+      case 'hunt': {
+        if (!args) return 'Usage: /hunt <playbook-name>\nExample: /hunt cobalt-strike\nType /playbooks to see available playbooks.';
+        const pbName = args.includes('-hunt') ? args : `${args}-hunt`;
+        this.playbookEngine.start(pbName);
+        return '__async__';
+      }
+      case 'respond': {
+        if (!args) return 'Usage: /respond <playbook-name>\nExample: /respond ransomware\nType /playbooks to see available playbooks.';
+        const pbName = args.includes('-response') ? args : `${args}-response`;
+        this.playbookEngine.start(pbName);
+        return '__async__';
+      }
+      case 'assess': {
+        if (!args) return 'Usage: /assess <playbook-name>\nExample: /assess zero-trust\nType /playbooks to see available playbooks.';
+        const pbName = args.includes('-assessment') ? args : `${args}-assessment`;
+        this.playbookEngine.start(pbName);
+        return '__async__';
+      }
+      case 'playbook': {
+        // /playbook <name> — generic start by exact name
+        if (!args) return 'Usage: /playbook <name>\nType /playbooks to see available playbooks.';
+        this.playbookEngine.start(args);
+        return '__async__';
+      }
+      case 'playbooks': {
+        // List available playbooks
+        const catalog = getCatalog();
+        if (!catalog || catalog.length === 0) {
+          // Trigger async load
+          loadPlaybookCatalog().then(books => {
+            const list = this.formatPlaybookList(books);
+            this.addMessage({
+              id: uid(), timestamp: Date.now(),
+              sender: { id: 'playbook', name: 'PLAYBOOK', type: 'system', color: '#f59e0b' },
+              type: 'system', content: list,
+            });
+          });
+          return '__async__';
+        }
+        return this.formatPlaybookList(catalog);
+      }
+      case 'abort': {
+        if (!this.playbookEngine.isRunning()) return 'No playbook is currently running.';
+        this.playbookEngine.abort();
+        return '__async__'; // abort() emits its own messages
+      }
+      default:
+        return null; // Not a playbook command
+    }
+  }
+
+  private formatPlaybookList(books: PlaybookDef[]): string {
+    if (books.length === 0) return 'No playbooks available.';
+    const catIcon: Record<string, string> = { hunt: '\uD83D\uDD0D', investigate: '\uD83D\uDD0E', respond: '\uD83D\uDEA8', assess: '\uD83D\uDCCB' };
+    let out = `Available Playbooks\n${'━'.repeat(40)}\n`;
+    for (const b of books) {
+      const m = b.metadata;
+      const icon = catIcon[m.category] ?? '\uD83D\uDCD6';
+      out += `\n${icon} ${m.displayName}\n`;
+      out += `   ${m.category.toUpperCase()} \u00B7 ${m.severity} \u00B7 ${b.spec?.steps?.length ?? '?'} steps \u00B7 ~${m.estimatedMinutes} min\n`;
+      out += `   Command: /${m.category} ${m.name.replace(/-(?:hunt|investigation|response|assessment)$/, '')}\n`;
+    }
+    out += `\n${'━'.repeat(40)}\nUsage: /hunt <name> \u00B7 /playbook <name> \u00B7 /respond <name> \u00B7 /assess <name>`;
+    return out;
   }
 
   // ── Agent routing ──────────────────────────────────────────────

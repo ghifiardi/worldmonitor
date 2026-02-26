@@ -1,0 +1,182 @@
+apiVersion: gatra/v1
+kind: Playbook
+metadata:
+  name: phishing-investigation
+  displayName: Phishing Email Investigation
+  description: >
+    Structured investigation of reported phishing emails. Analyzes email
+    indicators, checks URL and attachment reputation, correlates with known
+    campaigns, assesses organizational impact, and recommends containment.
+  author: GATRA SOC
+  version: "1.0"
+  tags:
+    - phishing
+    - email
+    - social-engineering
+    - bec
+  mitre:
+    tactics:
+      - TA0001  # Initial Access
+      - TA0043  # Reconnaissance
+      - TA0009  # Collection
+    techniques:
+      - T1566.001  # Spearphishing Attachment
+      - T1566.002  # Spearphishing Link
+      - T1566.003  # Spearphishing via Service
+      - T1598      # Phishing for Information
+      - T1204.001  # User Execution: Malicious Link
+      - T1204.002  # User Execution: Malicious File
+  severity: HIGH
+  estimatedMinutes: 15
+  category: investigate
+
+spec:
+  variables:
+    - name: email_indicators
+      type: string
+      description: Email headers, sender, subject, URLs, attachment hashes
+      required: true
+    - name: has_attachment
+      type: string
+      description: Whether the phishing email contains attachments
+      required: false
+      default: "unknown"
+
+  steps:
+    - id: collect_indicators
+      name: Collect Email Indicators
+      description: >
+        Provide the phishing email details — sender address, subject line,
+        any URLs in the body, attachment filenames or hashes, and relevant
+        email headers (especially Received, Return-Path, DKIM).
+      agent: ioc
+      action: "Analyze these phishing email indicators: {{email_indicators}}"
+      input:
+        source: analyst
+        prompt: "Paste the phishing email indicators (sender, subject, URLs, hashes, headers):"
+      output:
+        name: email_analysis
+        format: json
+      onFailure: continue
+
+    - id: url_reputation
+      name: URL Reputation Check
+      description: >
+        IOC Scanner checks all URLs found in the email against ThreatFox,
+        URLhaus, and other reputation databases. Identifies known phishing
+        domains, credential harvesting pages, and malware download URLs.
+      agent: ioc
+      action: >
+        Check reputation of all URLs and domains from the phishing email.
+        Look for: known phishing domains, credential harvesting pages,
+        URL shorteners redirecting to malicious sites, newly registered
+        domains, and domain typosquatting.
+        Email analysis: {{email_analysis}}
+      output:
+        name: url_reputation
+        format: text
+      onFailure: continue
+
+    - id: attachment_analysis
+      name: Attachment Analysis
+      description: >
+        If the email contains attachments, analyze file hashes against
+        MalwareBazaar and known malware families. Check for macro-enabled
+        documents, embedded scripts, and archive files with executables.
+      agent: ioc
+      action: >
+        Analyze attachment indicators from the phishing email.
+        Check file hashes against MalwareBazaar and threat intelligence feeds.
+        Look for: macro-enabled Office documents, PDF exploits, HTML smuggling,
+        ISO/IMG disk image files, compressed archives with executables.
+        Email analysis: {{email_analysis}}
+      conditions:
+        - field: has_attachment
+          operator: neq
+          value: "none"
+      output:
+        name: attachment_findings
+        format: text
+      onFailure: continue
+
+    - id: campaign_correlation
+      name: Campaign Correlation
+      description: >
+        TAA correlates phishing indicators with known campaigns — BEC groups,
+        nation-state phishing operations, and commodity phishing kits.
+      agent: taa
+      action: >
+        Correlate this phishing attack with known campaigns and threat actors.
+        Check for: Business Email Compromise (BEC) patterns, known phishing
+        kits (e.g., EvilProxy, Caffeine, W3LL), nation-state phishing ops
+        (APT28 credential harvesting, Kimsuky, Lazarus).
+        URL findings: {{url_reputation}}
+        Email analysis: {{email_analysis}}
+      output:
+        name: campaign_intel
+        format: text
+      onFailure: continue
+
+    - id: impact_assessment
+      name: Impact Assessment
+      description: >
+        ADA assesses the organizational impact — how many users received
+        the email, who clicked links, credential exposure risk, and
+        potential data exfiltration.
+      agent: ada
+      action: >
+        Assess the organizational impact of this phishing campaign.
+        Determine: number of recipients, click-through analysis, credential
+        submission detection, mail flow rules triggered, similar emails in
+        quarantine, and authentication anomalies from potentially compromised
+        accounts.
+        Campaign intel: {{campaign_intel}}
+        Email analysis: {{email_analysis}}
+      output:
+        name: impact
+        format: text
+      onFailure: continue
+
+    - id: containment
+      name: Containment Actions
+      description: >
+        CRA recommends and executes containment — blocking sender domains,
+        purging emails from mailboxes, resetting compromised credentials,
+        and blocking malicious URLs at the proxy.
+      agent: cra
+      action: >
+        Recommend containment actions for this phishing incident.
+        Consider: block sender domain/IP at email gateway, purge phishing
+        emails from all mailboxes, reset credentials for users who clicked,
+        block malicious URLs at web proxy, add IOCs to blocklists, notify
+        affected users.
+        Impact: {{impact}}
+        URL reputation: {{url_reputation}}
+        Campaign: {{campaign_intel}}
+      output:
+        name: containment_actions
+        format: text
+      onFailure: continue
+
+    - id: report
+      name: Investigation Report
+      description: >
+        CLA generates a structured phishing investigation report with
+        findings, impact assessment, containment actions, and user
+        awareness recommendations.
+      agent: cla
+      action: >
+        Generate a phishing investigation report.
+        Include: Executive Summary, Email Indicators, URL Analysis,
+        Attachment Findings, Campaign Attribution, Impact Assessment,
+        Containment Actions Taken, and User Awareness Recommendations.
+        Email: {{email_analysis}}
+        URLs: {{url_reputation}}
+        Attachments: {{attachment_findings}}
+        Campaign: {{campaign_intel}}
+        Impact: {{impact}}
+        Containment: {{containment_actions}}
+      output:
+        name: investigation_report
+        format: text
+      onFailure: continue
