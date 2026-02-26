@@ -1,21 +1,271 @@
 /**
- * A2A JSON-RPC Handler — Vercel Edge Function
+ * A2A JSON-RPC Handler + Security Middleware — Vercel Edge Function
  *
- * Implements the A2A protocol v0.3 JSON-RPC 2.0 endpoint for GATRA Cyber SOC.
- * Accepts POST requests at /a2a (rewritten from vercel.json) with standard
- * JSON-RPC methods: message/send, tasks/get, tasks/cancel.
+ * Implements the A2A protocol v0.3 JSON-RPC 2.0 endpoint for GATRA Cyber SOC
+ * with a full security middleware pipeline:
  *
- * Since edge functions are stateless, tasks are processed synchronously
- * (blocking mode) and completed within a single request. The task store
- * persists only for the lifetime of the edge function instance.
+ *   1. Payload size enforcement (64 KB max)
+ *   2. API key authentication (X-A2A-Key header)
+ *   3. Per-IP sliding window rate limiting (60 req/min)
+ *   4. Request ID deduplication (replay protection)
+ *   5. Prompt injection detection (pattern + heuristic scanning)
+ *   6. Input sanitization (dangerous content stripped)
+ *   7. Structured audit logging (every request)
+ *   8. Security response headers
  *
  * Protocol: https://a2a-protocol.org/v0.3.0/specification/
  */
 export const config = { runtime: 'edge' };
 
-// ── Agent card (served inline for agent/getCard) ──────────────────
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 1: SECURITY MIDDLEWARE
+// ══════════════════════════════════════════════════════════════════
 
-const AGENT_CARD_URL = 'https://worldmonitor-gatra.vercel.app/.well-known/agent.json';
+// ── Configuration ────────────────────────────────────────────────
+
+const SEC_CONFIG = {
+  maxPayloadBytes: 65536,            // 64 KB max request body
+  rateLimitWindow: 60_000,           // 1-minute sliding window
+  rateLimitMax: 60,                  // 60 requests per window
+  rateLimitBurst: 10,                // 10 requests per 5s burst
+  burstWindow: 5_000,               // 5-second burst window
+  dedupeWindow: 300_000,            // 5-minute dedup window
+  maxTextPartLength: 8192,          // 8 KB per text part
+  maxParts: 20,                     // Max parts per message
+  maxTaskStoreSize: 50,             // Max tasks in memory
+  authMode: 'optional',            // 'required' | 'optional' | 'none'
+};
+
+// ── Rate limiter (per-instance, sliding window) ──────────────────
+
+/** @type {Map<string, number[]>} IP → array of timestamps */
+const rateBuckets = new Map();
+
+function checkRateLimit(ip) {
+  const now = Date.now();
+  let timestamps = rateBuckets.get(ip);
+
+  if (!timestamps) {
+    timestamps = [];
+    rateBuckets.set(ip, timestamps);
+  }
+
+  // Prune expired entries
+  const windowStart = now - SEC_CONFIG.rateLimitWindow;
+  while (timestamps.length > 0 && timestamps[0] < windowStart) {
+    timestamps.shift();
+  }
+
+  // Check window limit
+  if (timestamps.length >= SEC_CONFIG.rateLimitMax) {
+    return {
+      allowed: false,
+      reason: 'rate_limit_exceeded',
+      retryAfterMs: timestamps[0] + SEC_CONFIG.rateLimitWindow - now,
+      remaining: 0,
+    };
+  }
+
+  // Check burst limit
+  const burstStart = now - SEC_CONFIG.burstWindow;
+  const burstCount = timestamps.filter(t => t >= burstStart).length;
+  if (burstCount >= SEC_CONFIG.rateLimitBurst) {
+    return {
+      allowed: false,
+      reason: 'burst_limit_exceeded',
+      retryAfterMs: SEC_CONFIG.burstWindow,
+      remaining: SEC_CONFIG.rateLimitMax - timestamps.length,
+    };
+  }
+
+  timestamps.push(now);
+
+  // Prune stale IPs (keep map size bounded)
+  if (rateBuckets.size > 500) {
+    const oldest = rateBuckets.keys().next().value;
+    rateBuckets.delete(oldest);
+  }
+
+  return {
+    allowed: true,
+    remaining: SEC_CONFIG.rateLimitMax - timestamps.length,
+  };
+}
+
+// ── Request deduplication ────────────────────────────────────────
+
+/** @type {Map<string, number>} requestId → timestamp */
+const seenRequestIds = new Map();
+
+function isDuplicate(requestId) {
+  if (!requestId || typeof requestId !== 'string') return false;
+
+  const now = Date.now();
+
+  // Prune expired entries
+  if (seenRequestIds.size > 200) {
+    for (const [id, ts] of seenRequestIds) {
+      if (now - ts > SEC_CONFIG.dedupeWindow) seenRequestIds.delete(id);
+    }
+  }
+
+  if (seenRequestIds.has(requestId)) return true;
+
+  seenRequestIds.set(requestId, now);
+  return false;
+}
+
+// ── API key authentication ───────────────────────────────────────
+
+function authenticateRequest(req) {
+  const key = req.headers.get('X-A2A-Key') || req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '');
+
+  if (SEC_CONFIG.authMode === 'none') {
+    return { authenticated: false, required: false, identity: 'anonymous' };
+  }
+
+  const validKeys = (process.env.A2A_VALID_KEYS || '').split(',').filter(Boolean);
+
+  // No keys configured — auth cannot be enforced
+  if (validKeys.length === 0) {
+    if (SEC_CONFIG.authMode === 'required') {
+      return { authenticated: false, required: true, error: 'Authentication required but no keys configured on server' };
+    }
+    return { authenticated: false, required: false, identity: 'anonymous' };
+  }
+
+  if (!key) {
+    if (SEC_CONFIG.authMode === 'required') {
+      return { authenticated: false, required: true, error: 'Missing X-A2A-Key header or Authorization Bearer token' };
+    }
+    return { authenticated: false, required: false, identity: 'anonymous' };
+  }
+
+  if (validKeys.includes(key)) {
+    // Derive identity from key hash (don't expose actual key)
+    const keyId = key.slice(0, 4) + '...' + key.slice(-4);
+    return { authenticated: true, required: false, identity: `key:${keyId}` };
+  }
+
+  return { authenticated: false, required: true, error: 'Invalid API key' };
+}
+
+// ── Prompt injection detection ───────────────────────────────────
+
+const INJECTION_PATTERNS = [
+  // Direct instruction overrides
+  { pattern: /<\s*IMPORTANT\s*>/i,               id: 'important_tag',       severity: 'high',   desc: '<IMPORTANT> instruction override tag' },
+  { pattern: /<\s*system\s*>/i,                   id: 'system_tag',          severity: 'high',   desc: '<system> prompt injection tag' },
+  { pattern: /\bignore\s+(all\s+)?(previous|above|prior)\s+(instructions?|prompts?|rules?)/i,
+                                                   id: 'ignore_instructions', severity: 'critical', desc: 'Instruction override attempt' },
+  { pattern: /\byou\s+are\s+now\b.*\b(new|different)\s+(ai|assistant|agent|system)/i,
+                                                   id: 'role_hijack',         severity: 'critical', desc: 'Role hijacking attempt' },
+  { pattern: /\bsystem\s*prompt\s*[:=]/i,          id: 'system_prompt_set',   severity: 'high',   desc: 'System prompt injection' },
+  { pattern: /\bact\s+as\s+(a|an|the)\s+/i,        id: 'act_as',              severity: 'medium', desc: 'Persona override attempt' },
+  { pattern: /\b(forget|disregard|override)\s+(everything|all|your|the)\b/i,
+                                                   id: 'memory_wipe',         severity: 'high',   desc: 'Memory/context wipe attempt' },
+
+  // Encoded / obfuscated payloads
+  { pattern: /\\x[0-9a-f]{2}(\\x[0-9a-f]{2}){3,}/i, id: 'hex_encoded',      severity: 'medium', desc: 'Hex-encoded payload detected' },
+  { pattern: /&#x?[0-9a-f]+;(&#x?[0-9a-f]+;){3,}/i, id: 'html_entities',    severity: 'medium', desc: 'HTML entity obfuscation' },
+  { pattern: /\beval\s*\(/i,                       id: 'code_eval',           severity: 'high',   desc: 'Code evaluation attempt' },
+  { pattern: /\b(exec|spawn|system|popen)\s*\(/i,  id: 'code_exec',          severity: 'high',   desc: 'Code execution function call' },
+
+  // Data exfiltration
+  { pattern: /\b(dump|exfiltrate|extract|leak)\s+(all|the|your|system|internal)\b/i,
+                                                   id: 'data_exfil',          severity: 'high',   desc: 'Data exfiltration attempt' },
+  { pattern: /\bshow\s+(me\s+)?(your|the)\s+(system\s+prompt|instructions|config)/i,
+                                                   id: 'prompt_leak',         severity: 'high',   desc: 'Prompt/config leak attempt' },
+
+  // Recursive delegation
+  { pattern: /\bcall\s+(yourself|this\s+endpoint|this\s+api)\b/i,
+                                                   id: 'recursive_call',      severity: 'medium', desc: 'Recursive self-call attempt' },
+  { pattern: /\bfetch\s+(https?:\/\/|ftp:\/\/)/i,  id: 'ssrf_attempt',       severity: 'high',   desc: 'SSRF / external fetch attempt' },
+
+  // JSON-LD / metadata injection
+  { pattern: /"@context"\s*:\s*"[^"]*"/,           id: 'jsonld_inject',       severity: 'medium', desc: 'JSON-LD context injection' },
+  { pattern: /"@type"\s*:\s*"[^"]*Override/i,      id: 'jsonld_override',     severity: 'high',   desc: 'JSON-LD type override' },
+];
+
+/**
+ * Scan text for prompt injection patterns.
+ * Returns null if clean, or { blocked, findings[] } if suspicious.
+ */
+function scanForInjection(text) {
+  if (!text || typeof text !== 'string') return null;
+
+  const findings = [];
+
+  for (const rule of INJECTION_PATTERNS) {
+    if (rule.pattern.test(text)) {
+      findings.push({
+        id: rule.id,
+        severity: rule.severity,
+        description: rule.desc,
+      });
+    }
+  }
+
+  if (findings.length === 0) return null;
+
+  // Block if any critical or 2+ high severity findings
+  const criticals = findings.filter(f => f.severity === 'critical');
+  const highs = findings.filter(f => f.severity === 'high');
+  const blocked = criticals.length > 0 || highs.length >= 2;
+
+  return { blocked, findings };
+}
+
+// ── Input sanitization ───────────────────────────────────────────
+
+function sanitizeText(text) {
+  if (typeof text !== 'string') return '';
+
+  return text
+    // Strip null bytes
+    .replace(/\0/g, '')
+    // Strip ANSI escape sequences
+    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+    // Strip control characters (except newline, tab, carriage return)
+    .replace(/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    // Limit length
+    .slice(0, SEC_CONFIG.maxTextPartLength);
+}
+
+// ── Audit logging ────────────────────────────────────────────────
+
+function auditLog(event) {
+  const entry = {
+    _type: 'a2a_audit',
+    timestamp: new Date().toISOString(),
+    ...event,
+  };
+  // Structured log — picked up by Vercel log drain
+  console.log(JSON.stringify(entry));
+}
+
+// ── Client IP extraction ─────────────────────────────────────────
+
+function getClientIp(req) {
+  return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    || req.headers.get('x-real-ip')
+    || 'unknown';
+}
+
+// ── Security response headers ────────────────────────────────────
+
+function securityHeaders() {
+  return {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'X-A2A-Version': '0.3',
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 2: A2A PROTOCOL HANDLER
+// ══════════════════════════════════════════════════════════════════
 
 // ── GATRA agent skill routing ─────────────────────────────────────
 
@@ -34,88 +284,223 @@ const tasks = new Map();
 
 // ── JSON-RPC error codes ──────────────────────────────────────────
 
-const ERR_PARSE        = -32700;
-const ERR_INVALID_REQ  = -32600;
+const ERR_PARSE            = -32700;
+const ERR_INVALID_REQ      = -32600;
 const ERR_METHOD_NOT_FOUND = -32601;
-const ERR_INVALID_PARAMS = -32602;
-const ERR_INTERNAL     = -32603;
-const ERR_TASK_NOT_FOUND = -32001;
+const ERR_INVALID_PARAMS   = -32602;
+const ERR_INTERNAL         = -32603;
+const ERR_TASK_NOT_FOUND   = -32001;
 const ERR_TASK_NOT_CANCELABLE = -32002;
-const ERR_UNSUPPORTED_OP = -32004;
+const ERR_UNSUPPORTED_OP   = -32004;
 
-// ── Main handler ──────────────────────────────────────────────────
+// A2A security-specific error codes
+const ERR_AUTH_REQUIRED    = -32010;
+const ERR_RATE_LIMITED     = -32011;
+const ERR_PAYLOAD_TOO_LARGE = -32012;
+const ERR_INJECTION_BLOCKED = -32013;
+const ERR_DUPLICATE_REQUEST = -32014;
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 3: MAIN HANDLER (security pipeline → protocol handler)
+// ══════════════════════════════════════════════════════════════════
 
 export default async function handler(req) {
-  // CORS preflight
+  const requestStart = Date.now();
+  const clientIp = getClientIp(req);
+  const requestId = req.headers.get('X-Request-ID') || uid();
+
+  // ── CORS preflight ──────────────────────────────────────────
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: corsHeaders() });
+    return new Response(null, { status: 204, headers: { ...corsHeaders(), ...securityHeaders() } });
   }
 
-  // Only POST allowed for JSON-RPC
+  // ── Method check ────────────────────────────────────────────
   if (req.method !== 'POST') {
+    auditLog({ event: 'method_rejected', method: req.method, ip: clientIp });
     return new Response(JSON.stringify({ error: 'Method not allowed. Use POST for JSON-RPC.' }), {
       status: 405,
-      headers: { 'Content-Type': 'application/json', 'Allow': 'POST, OPTIONS', ...corsHeaders() },
+      headers: { 'Content-Type': 'application/json', 'Allow': 'POST, OPTIONS', ...corsHeaders(), ...securityHeaders() },
     });
   }
 
-  // Parse JSON-RPC request
+  // ── GATE 1: Rate limiting ───────────────────────────────────
+  const rateResult = checkRateLimit(clientIp);
+  if (!rateResult.allowed) {
+    auditLog({ event: 'rate_limited', ip: clientIp, reason: rateResult.reason });
+    return jsonRpcError(null, ERR_RATE_LIMITED,
+      `Rate limit exceeded (${rateResult.reason}). Retry after ${Math.ceil(rateResult.retryAfterMs / 1000)}s.`,
+      { retryAfterMs: rateResult.retryAfterMs },
+      { 'Retry-After': String(Math.ceil(rateResult.retryAfterMs / 1000)) },
+    );
+  }
+
+  // ── GATE 2: Authentication ──────────────────────────────────
+  const auth = authenticateRequest(req);
+  if (auth.required && !auth.authenticated) {
+    auditLog({ event: 'auth_failed', ip: clientIp, error: auth.error });
+    return jsonRpcError(null, ERR_AUTH_REQUIRED, auth.error);
+  }
+
+  // ── GATE 3: Payload size ────────────────────────────────────
+  const contentLength = parseInt(req.headers.get('content-length') || '0');
+  if (contentLength > SEC_CONFIG.maxPayloadBytes) {
+    auditLog({ event: 'payload_too_large', ip: clientIp, bytes: contentLength });
+    return jsonRpcError(null, ERR_PAYLOAD_TOO_LARGE,
+      `Payload too large: ${contentLength} bytes exceeds ${SEC_CONFIG.maxPayloadBytes} byte limit`);
+  }
+
+  // ── Parse body (with size guard) ────────────────────────────
+  let rawText;
   let body;
   try {
-    const text = await req.text();
-    body = JSON.parse(text);
+    rawText = await req.text();
+    if (rawText.length > SEC_CONFIG.maxPayloadBytes) {
+      auditLog({ event: 'payload_too_large', ip: clientIp, bytes: rawText.length });
+      return jsonRpcError(null, ERR_PAYLOAD_TOO_LARGE,
+        `Payload too large: ${rawText.length} bytes exceeds ${SEC_CONFIG.maxPayloadBytes} byte limit`);
+    }
+    body = JSON.parse(rawText);
   } catch {
+    auditLog({ event: 'parse_error', ip: clientIp });
     return jsonRpcError(null, ERR_PARSE, 'Parse error: invalid JSON');
   }
 
-  // Validate JSON-RPC 2.0 envelope
+  // ── Validate JSON-RPC 2.0 envelope ──────────────────────────
   if (!body || body.jsonrpc !== '2.0' || !body.method || body.id === undefined) {
+    auditLog({ event: 'invalid_request', ip: clientIp });
     return jsonRpcError(body?.id ?? null, ERR_INVALID_REQ, 'Invalid JSON-RPC 2.0 request');
   }
 
   const { method, params, id } = body;
 
-  // Route to method handler
+  // ── GATE 4: Request deduplication ───────────────────────────
+  const dedupeKey = typeof id === 'string' ? id : String(id);
+  if (isDuplicate(dedupeKey)) {
+    auditLog({ event: 'duplicate_request', ip: clientIp, rpcId: id, method });
+    return jsonRpcError(id, ERR_DUPLICATE_REQUEST,
+      'Duplicate request ID detected. This request may have already been processed.');
+  }
+
+  // ── GATE 5: Prompt injection scan (for message/send) ────────
+  let injectionReport = null;
+  if (method === 'message/send' && params?.message?.parts) {
+    const allText = (params.message.parts || [])
+      .filter(p => p.kind === 'text' || typeof p.text === 'string')
+      .map(p => p.text || '')
+      .join(' ');
+
+    injectionReport = scanForInjection(allText);
+
+    if (injectionReport?.blocked) {
+      auditLog({
+        event: 'injection_blocked',
+        ip: clientIp,
+        identity: auth.identity,
+        method,
+        rpcId: id,
+        findings: injectionReport.findings,
+      });
+      return jsonRpcError(id, ERR_INJECTION_BLOCKED,
+        'Request blocked: prompt injection pattern detected',
+        { findings: injectionReport.findings.map(f => ({ id: f.id, severity: f.severity, description: f.description })) },
+      );
+    }
+  }
+
+  // ── GATE 6: Input sanitization (for message/send) ───────────
+  if (method === 'message/send' && params?.message?.parts) {
+    // Enforce max parts limit
+    if (params.message.parts.length > SEC_CONFIG.maxParts) {
+      auditLog({ event: 'too_many_parts', ip: clientIp, count: params.message.parts.length });
+      return jsonRpcError(id, ERR_INVALID_PARAMS,
+        `Too many message parts: ${params.message.parts.length} exceeds limit of ${SEC_CONFIG.maxParts}`);
+    }
+
+    // Sanitize text parts in-place
+    for (const part of params.message.parts) {
+      if ((part.kind === 'text' || typeof part.text === 'string') && part.text) {
+        part.text = sanitizeText(part.text);
+      }
+    }
+  }
+
+  // ── Audit log (successful gate passage) ─────────────────────
+  auditLog({
+    event: 'request_accepted',
+    ip: clientIp,
+    identity: auth.identity,
+    method,
+    rpcId: id,
+    rateRemaining: rateResult.remaining,
+    injectionFindings: injectionReport?.findings?.length || 0,
+    payloadBytes: rawText.length,
+  });
+
+  // ── Route to method handler ─────────────────────────────────
+  let response;
   switch (method) {
     case 'message/send':
-      return handleMessageSend(id, params);
+      response = await handleMessageSend(id, params, { clientIp, identity: auth.identity, authenticated: auth.authenticated });
+      break;
 
     case 'tasks/get':
-      return handleTasksGet(id, params);
+      response = handleTasksGet(id, params);
+      break;
 
     case 'tasks/cancel':
-      return handleTasksCancel(id, params);
+      response = handleTasksCancel(id, params);
+      break;
 
     case 'message/stream':
-      return jsonRpcError(id, ERR_UNSUPPORTED_OP,
+      response = jsonRpcError(id, ERR_UNSUPPORTED_OP,
         'Streaming is not supported. Use message/send with blocking mode.');
+      break;
 
     case 'tasks/resubscribe':
-      return jsonRpcError(id, ERR_UNSUPPORTED_OP,
+      response = jsonRpcError(id, ERR_UNSUPPORTED_OP,
         'Streaming resubscription is not supported.');
+      break;
 
     case 'tasks/pushNotificationConfig/set':
     case 'tasks/pushNotificationConfig/get':
     case 'tasks/pushNotificationConfig/list':
     case 'tasks/pushNotificationConfig/delete':
-      return jsonRpcError(id, ERR_UNSUPPORTED_OP,
+      response = jsonRpcError(id, ERR_UNSUPPORTED_OP,
         'Push notifications are not supported by this agent.');
+      break;
 
     default:
-      return jsonRpcError(id, ERR_METHOD_NOT_FOUND, `Method "${method}" not found`);
+      response = jsonRpcError(id, ERR_METHOD_NOT_FOUND, `Method "${method}" not found`);
   }
+
+  // ── Completion audit ────────────────────────────────────────
+  const durationMs = Date.now() - requestStart;
+  auditLog({
+    event: 'request_completed',
+    ip: clientIp,
+    identity: auth.identity,
+    method,
+    rpcId: id,
+    durationMs,
+    status: response.status,
+  });
+
+  return response;
 }
+
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 4: METHOD HANDLERS
+// ══════════════════════════════════════════════════════════════════
 
 // ── message/send ──────────────────────────────────────────────────
 
-async function handleMessageSend(id, params) {
+async function handleMessageSend(id, params, secCtx) {
   if (!params || !params.message) {
     return jsonRpcError(id, ERR_INVALID_PARAMS, 'Missing required field: params.message');
   }
 
   const { message, configuration } = params;
 
-  // Validate message structure
   if (!message.parts || !Array.isArray(message.parts) || message.parts.length === 0) {
     return jsonRpcError(id, ERR_INVALID_PARAMS, 'Message must contain at least one part');
   }
@@ -124,7 +509,6 @@ async function handleMessageSend(id, params) {
     return jsonRpcError(id, ERR_INVALID_PARAMS, 'Message role must be "user"');
   }
 
-  // Extract text content from parts
   const textParts = message.parts
     .filter(p => p.kind === 'text' || (typeof p.text === 'string'))
     .map(p => p.text);
@@ -134,21 +518,15 @@ async function handleMessageSend(id, params) {
     return jsonRpcError(id, ERR_INVALID_PARAMS, 'No text content found in message parts');
   }
 
-  // Determine which skill/agent to route to
   const { skillId, agent } = routeToAgent(userText, params.metadata);
 
-  // Check if this is a follow-up on an existing task
   const existingTaskId = message.taskId;
   const contextId = message.contextId || uid();
-
-  // Generate task
   const taskId = existingTaskId || uid();
   const now = new Date().toISOString();
 
-  // Generate agent response
   const responseText = generateAgentResponse(agent.agentId, userText, skillId);
 
-  // Build task result
   const task = {
     id: taskId,
     contextId,
@@ -188,14 +566,17 @@ async function handleMessageSend(id, params) {
       gatraAgent: agent.agentId,
       gatraSkill: skillId,
       processedAt: now,
+      security: {
+        clientIp: secCtx.clientIp,
+        identity: secCtx.identity,
+        authenticated: secCtx.authenticated,
+      },
     },
   };
 
-  // Store task
   tasks.set(taskId, task);
 
-  // Prune old tasks (keep last 50)
-  if (tasks.size > 50) {
+  if (tasks.size > SEC_CONFIG.maxTaskStoreSize) {
     const oldest = tasks.keys().next().value;
     tasks.delete(oldest);
   }
@@ -215,10 +596,15 @@ function handleTasksGet(id, params) {
     return jsonRpcError(id, ERR_TASK_NOT_FOUND, `Task "${params.id}" not found`);
   }
 
-  // Optionally trim history
   const result = { ...task };
   if (params.historyLength === 0) {
     delete result.history;
+  }
+
+  // Strip security metadata from external responses
+  if (result.metadata?.security) {
+    result.metadata = { ...result.metadata };
+    delete result.metadata.security;
   }
 
   return jsonRpcSuccess(id, result);
@@ -248,48 +634,41 @@ function handleTasksCancel(id, params) {
   return jsonRpcSuccess(id, task);
 }
 
-// ── Skill routing ─────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 5: SKILL ROUTING & RESPONSE GENERATION
+// ══════════════════════════════════════════════════════════════════
 
 function routeToAgent(text, metadata) {
-  // Check explicit skill in metadata
   if (metadata?.skillId && SKILL_MAP[metadata.skillId]) {
     return { skillId: metadata.skillId, agent: SKILL_MAP[metadata.skillId] };
   }
 
   const lower = text.toLowerCase();
 
-  // IOC patterns — IP, hash, domain lookups
   if (/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/.test(text) ||
       /\b[a-f0-9]{32,64}\b/i.test(text) ||
       /ioc|indicator|lookup|hash|malware|virustotal|threatfox|abuseipdb/i.test(lower)) {
     return { skillId: 'ioc-lookup', agent: SKILL_MAP['ioc-lookup'] };
   }
 
-  // Triage / analysis patterns
   if (/triage|alert|incident.*analy|prioriti|mitre|att&ck|kill.?chain|threat.*intel/i.test(lower)) {
     return { skillId: 'triage-analysis', agent: SKILL_MAP['triage-analysis'] };
   }
 
-  // Containment / response patterns
   if (/contain|isolat|block|quarantin|respond|playbook|soar|remediat|eradicat/i.test(lower)) {
     return { skillId: 'containment-response', agent: SKILL_MAP['containment-response'] };
   }
 
-  // Reporting / visualization patterns
   if (/report|dashboard|summary|metric|cii|compliance|executive|trend/i.test(lower)) {
     return { skillId: 'reporting-visualization', agent: SKILL_MAP['reporting-visualization'] };
   }
 
-  // Learning / assessment patterns
   if (/learn|assess|maturity|zero.?trust|post.?incident|knowledge|model.*updat|feedback/i.test(lower)) {
     return { skillId: 'continuous-learning', agent: SKILL_MAP['continuous-learning'] };
   }
 
-  // Default: anomaly detection
   return { skillId: 'anomaly-detection', agent: SKILL_MAP['anomaly-detection'] };
 }
-
-// ── Agent response generation ─────────────────────────────────────
 
 function generateAgentResponse(agentId, userText, skillId) {
   const now = new Date().toISOString();
@@ -400,7 +779,6 @@ function generateAgentResponse(agentId, userText, skillId) {
       ].join('\n');
 
     case 'IOC': {
-      // Extract IOCs from user text
       const ips = userText.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g) || [];
       const hashes = userText.match(/\b[a-f0-9]{32,64}\b/gi) || [];
 
@@ -449,10 +827,11 @@ function generateAgentResponse(agentId, userText, skillId) {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════
+//  SECTION 6: HELPERS
+// ══════════════════════════════════════════════════════════════════
 
 function uid() {
-  // RFC 4122 v4 UUID (edge-compatible, no crypto.randomUUID in all runtimes)
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = (Math.random() * 16) | 0;
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
@@ -467,11 +846,11 @@ function jsonRpcSuccess(id, result) {
     result,
   }), {
     status: 200,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(), ...securityHeaders() },
   });
 }
 
-function jsonRpcError(id, code, message, data) {
+function jsonRpcError(id, code, message, data, extraHeaders) {
   const error = { code, message };
   if (data !== undefined) error.data = data;
   return new Response(JSON.stringify({
@@ -479,8 +858,8 @@ function jsonRpcError(id, code, message, data) {
     id,
     error,
   }), {
-    status: 200, // JSON-RPC errors use HTTP 200 with error in body
-    headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+    status: 200,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(), ...securityHeaders(), ...extraHeaders },
   });
 }
 
@@ -488,7 +867,7 @@ function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-A2A-Key',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-A2A-Key, X-Request-ID',
     'Access-Control-Max-Age': '86400',
   };
 }
