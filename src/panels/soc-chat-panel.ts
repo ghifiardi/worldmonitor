@@ -61,6 +61,7 @@ const GATRA_AGENTS: GatraAgentDef[] = [
     triggerPatterns: [
       /why\s+(was|is)\s+(this|that)\s+(escalat|triag|prioriti)/i,
       /(threat|risk)\s+(assess|level|score)/i, /mitre\s+(map|attack|technique)/i,
+      /triag(e|ing)/i, /prioriti(ze|zation|es)/i,
       /@taa\b/i,
     ],
   },
@@ -119,8 +120,17 @@ function generateAgentResponse(agent: GatraAgentDef, message: string): string {
       if (/anomal(y|ies)/i.test(message)) {
         const recent = alerts.filter(a => now.getTime() - a.timestamp.getTime() < 3600000);
         if (recent.length === 0) return 'No anomalies in the last hour. All baselines nominal.';
-        return `${recent.length} anomalies in last hour:\n` +
-          recent.slice(0, 5).map(a => `\u2022 ${a.mitreId} \u2013 ${a.mitreName} (${a.severity}, conf: ${a.confidence}%)`).join('\n');
+        // Deduplicate by MITRE ID, show count per technique
+        const byTechnique = new Map<string, { a: typeof recent[0]; count: number }>();
+        for (const a of recent) {
+          const existing = byTechnique.get(a.mitreId);
+          if (existing) { existing.count++; }
+          else { byTechnique.set(a.mitreId, { a, count: 1 }); }
+        }
+        const lines = [...byTechnique.values()].slice(0, 5).map(({ a, count }) =>
+          `\u2022 ${a.mitreId} \u2013 ${a.mitreName} (${a.severity}, conf: ${a.confidence}%)${count > 1 ? ` \u00D7${count}` : ''}`
+        );
+        return `${recent.length} anomalies in last hour (${byTechnique.size} unique techniques):\n` + lines.join('\n');
       }
       if (/false\s*positive/i.test(message)) {
         const alert = alerts[0];
@@ -147,12 +157,15 @@ function generateAgentResponse(agent: GatraAgentDef, message: string): string {
             `\u2022 Alternatives: INVESTIGATE (${(0.2 + Math.random() * 0.15).toFixed(2)}), DISMISS (${(Math.random() * 0.05).toFixed(2)})`;
         }
       }
-      if (/(threat|risk)\s*(assess|level|score)/i.test(message)) {
+      if (/(threat|risk)\s*(assess|level|score)/i.test(message) || /triag(e|ing)/i.test(message)) {
+        const topTechniques = [...new Set(alerts.map(a => a.mitreId))].slice(0, 5);
+        const highSev = alerts.filter(a => a.severity === 'critical' || a.severity === 'high');
         return `Current threat assessment:\n` +
-          `\u2022 Active criticals: ${criticalCount}\n` +
+          `\u2022 Active criticals: ${criticalCount} | High: ${highSev.length - criticalCount}\n` +
           `\u2022 Total alerts: ${alerts.length}\n` +
-          `\u2022 Top techniques: ${[...new Set(alerts.slice(0, 5).map(a => a.mitreId))].join(', ') || 'N/A'}\n` +
-          `\u2022 Recommendation: ${criticalCount > 0 ? 'Maintain elevated monitoring.' : 'Standard posture.'}`;
+          `\u2022 Top techniques: ${topTechniques.join(', ') || 'N/A'}\n` +
+          `\u2022 Triage queue: ${criticalCount} ESCALATE, ${highSev.length - criticalCount} INVESTIGATE, ${alerts.length - highSev.length} MONITOR\n` +
+          `\u2022 Recommendation: ${criticalCount > 0 ? 'Maintain elevated monitoring. Review criticals first.' : 'Standard posture. No immediate escalation needed.'}`;
       }
       return `TAA online. ${criticalCount} critical alerts in triage queue.`;
     }
@@ -362,8 +375,9 @@ function injectCSS(): void {
   display: inline-flex; align-items: center; gap: 6px;
   background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
   border-radius: 4px; padding: 4px 8px; margin-top: 3px; font-size: 10px;
-  cursor: pointer;
+  cursor: pointer; flex-wrap: nowrap;
 }
+.soc-alert-card > span { white-space: nowrap; }
 .soc-alert-card:hover { background: rgba(255,255,255,0.07); }
 .soc-alert-sev { font-weight: 700; font-size: 9px; text-transform: uppercase; }
 
