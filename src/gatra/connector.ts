@@ -35,9 +35,9 @@ let _refreshing = false;
 let _source: 'live' | 'mock' = 'mock';
 const _listeners: Set<(snap: GatraConnectorSnapshot) => void> = new Set();
 
-// ── GATRA API API fetch ──────────────────────────────────────────────
+// ── GATRA API fetch ─────────────────────────────────────────────────
 
-/** Attempt to load real GATRA data from the GATRA API API route. */
+/** Attempt to load real GATRA data from the API route (BigQuery-backed). */
 async function fetchFromGatraAPI(): Promise<GatraConnectorSnapshot | null> {
   try {
     const res = await fetch('/api/gatra-data', { signal: AbortSignal.timeout(30000) });
@@ -130,7 +130,7 @@ export async function refreshGatraData(): Promise<GatraConnectorSnapshot> {
   _refreshing = true;
 
   try {
-    // Try real GATRA API data first
+    // Try real GATRA API data first (BigQuery-backed)
     const apiSnap = await fetchFromGatraAPI();
 
     if (apiSnap && apiSnap.alerts.length > 0) {
