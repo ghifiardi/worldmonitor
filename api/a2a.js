@@ -733,7 +733,7 @@ async function generateIOCResponse(userText, now) {
       if (r.status === 'fulfilled' && r.value.sources.length > 0) {
         const data = r.value;
         lines.push(`IP: ${ip}${data.cached ? ' (cached)' : ''}`);
-        lines.push(`  Verdict: ${data.verdict.toUpperCase()} (confidence: ${data.confidence}%)`);
+        lines.push(`  Verdict: ${data.verdict.toUpperCase()}${data.confidence > 0 ? ` (confidence: ${data.confidence}%)` : ''}`);
 
         if (data.abuseipdb) {
           const a = data.abuseipdb;
@@ -746,23 +746,29 @@ async function generateIOCResponse(userText, now) {
 
         if (data.virustotal) {
           const v = data.virustotal;
-          lines.push(`  VirusTotal: ${v.malicious}/${v.totalEngines} engines flagged`);
-          if (v.asOwner) lines.push(`    AS Owner: ${v.asOwner}`);
-          if (v.country) lines.push(`    Country: ${v.country}`);
-          if (v.network) lines.push(`    Network: ${v.network}`);
+          if (v.rateLimited) {
+            lines.push(`  VirusTotal: Rate limited (free tier: 4 req/min). Try again shortly.`);
+          } else {
+            lines.push(`  VirusTotal: ${v.malicious}/${v.totalEngines} engines flagged`);
+            if (v.asOwner) lines.push(`    AS Owner: ${v.asOwner}`);
+            if (v.country) lines.push(`    Country: ${v.country}`);
+            if (v.network) lines.push(`    Network: ${v.network}`);
+          }
         }
 
         // Recommendation
         if (data.verdict === 'malicious') {
-          lines.push(`  ⚠ Recommendation: BLOCK immediately, investigate related connections`);
+          lines.push(`  Recommendation: BLOCK immediately, investigate related connections`);
         } else if (data.verdict === 'suspicious') {
           lines.push(`  Recommendation: Monitor and consider blocking`);
         }
         lines.push(``);
       } else {
-        // Fallback
+        // Fallback — include diagnostic info
+        const reason = r.status === 'rejected' ? r.reason?.message || 'Promise rejected'
+          : r.value?.sources?.length === 0 ? 'API call failed or timed out' : 'Unknown';
         lines.push(`IP: ${ip}`);
-        lines.push(`  Status: Lookup unavailable (no API keys or API error)`);
+        lines.push(`  Status: Lookup failed (${reason})`);
         lines.push(``);
       }
     }

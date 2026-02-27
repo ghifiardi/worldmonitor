@@ -104,7 +104,18 @@ export async function checkIP(ip) {
       timedFetch(`${VT_BASE}/ip_addresses/${encodeURIComponent(ip)}`, {
         headers: { 'x-apikey': vtKey },
       })
-        .then(r => r.ok ? r.json() : null)
+        .then(async r => {
+          if (r.status === 429) {
+            result.sources.push('VirusTotal');
+            result.virustotal = { rateLimited: true, note: 'Rate limited (4 req/min free tier)' };
+            return null;
+          }
+          if (!r.ok) {
+            console.log(JSON.stringify({ _type: 'vt_error', status: r.status, ip }));
+            return null;
+          }
+          return r.json();
+        })
         .then(data => {
           if (!data?.data?.attributes) return;
           const attr = data.data.attributes;
@@ -123,7 +134,7 @@ export async function checkIP(ip) {
             network: attr.network || null,
           };
         })
-        .catch(() => {}),
+        .catch(e => { console.log(JSON.stringify({ _type: 'vt_catch', error: e?.message, ip })); }),
     );
   }
 
@@ -133,12 +144,19 @@ export async function checkIP(ip) {
   const abuseConf = result.abuseipdb?.abuseConfidence ?? 0;
   const vtMal = result.virustotal?.malicious ?? 0;
   const vtTotal = result.virustotal?.totalEngines ?? 0;
-  result.verdict = result.sources.length > 0
-    ? verdictFromScores(abuseConf, vtMal, vtTotal)
-    : 'unchecked';
+  const vtRateLimited = result.virustotal?.rateLimited === true;
+
+  if (result.sources.length === 0) {
+    result.verdict = 'unchecked';
+  } else if (vtRateLimited && !result.abuseipdb) {
+    result.verdict = 'rate_limited';
+  } else {
+    result.verdict = verdictFromScores(abuseConf, vtMal, vtTotal);
+  }
   result.confidence = Math.max(abuseConf, vtTotal > 0 ? Math.round((vtMal / vtTotal) * 100) : 0);
 
-  if (result.sources.length > 0) setCache(cacheKey, result);
+  // Only cache complete results (not rate-limited ones)
+  if (result.sources.length > 0 && !vtRateLimited) setCache(cacheKey, result);
   return result;
 }
 
@@ -165,7 +183,10 @@ export async function checkHash(hash) {
       const res = await timedFetch(`${VT_BASE}/files/${encodeURIComponent(hash)}`, {
         headers: { 'x-apikey': vtKey },
       });
-      if (res.ok) {
+      if (res.status === 429) {
+        result.sources.push('VirusTotal');
+        result.virustotal = { rateLimited: true, note: 'Rate limited (4 req/min free tier)' };
+      } else if (res.ok) {
         const data = await res.json();
         const attr = data.data?.attributes;
         if (attr) {
@@ -224,7 +245,10 @@ export async function checkDomain(domain) {
       const res = await timedFetch(`${VT_BASE}/domains/${encodeURIComponent(domain)}`, {
         headers: { 'x-apikey': vtKey },
       });
-      if (res.ok) {
+      if (res.status === 429) {
+        result.sources.push('VirusTotal');
+        result.virustotal = { rateLimited: true, note: 'Rate limited (4 req/min free tier)' };
+      } else if (res.ok) {
         const data = await res.json();
         const attr = data.data?.attributes;
         if (attr) {
