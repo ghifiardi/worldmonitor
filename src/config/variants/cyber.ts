@@ -109,6 +109,7 @@ export const DEFAULT_PANELS: Record<string, PanelConfig> = {
   research: { name: 'Security Research', enabled: true, priority: 1 },
   policy: { name: 'Cyber Policy', enabled: true, priority: 2 },
   aiSecurity: { name: 'AI & Security', enabled: true, priority: 2 },
+  'personal-security-posture': { name: 'Security Posture', enabled: true, priority: 1 },
   monitors: { name: 'My Monitors', enabled: true, priority: 2 },
 };
 

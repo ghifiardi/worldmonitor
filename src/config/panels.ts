@@ -396,6 +396,7 @@ const CYBER_PANELS: Record<string, PanelConfig> = {
   'cve-feed': { name: 'CVE Feed', enabled: true, priority: 1 },
   'ransomware-tracker': { name: 'Ransomware Tracker', enabled: true, priority: 1 },
   'a2a-security': { name: 'A2A Security Monitor', enabled: true, priority: 1 },
+  'personal-security-posture': { name: 'Security Posture', enabled: true, priority: 1 },
   monitors: { name: 'My Monitors', enabled: true, priority: 2 },
 };
 

@@ -89,6 +89,7 @@ import { CVEFeedPanel } from '@/panels/cve-feed-panel';
 import { CiiScorePanel } from '@/panels/cii-score-panel';
 import { PredictionSignalsPanel } from '@/panels/prediction-signals-panel';
 import { A2aSecurityPanel } from '@/panels/a2a-security-panel';
+import { PersonalSecurityPosturePanel } from '@/panels/personal-security-posture-panel';
 import { SocChatPanel } from '@/panels/soc-chat-panel';
 import { refreshGatraData, ingestConflictCorrelations } from '@/gatra/connector';
 import type { SearchResult } from '@/components/SearchModal';
@@ -2461,6 +2462,9 @@ export class App {
 
       const a2aSecurityPanel = new A2aSecurityPanel();
       this.panels['a2a-security'] = a2aSecurityPanel;
+
+      const pspPanel = new PersonalSecurityPosturePanel();
+      this.panels['personal-security-posture'] = pspPanel;
 
       // SOC Chat slide-out panel
       this.socChatPanel = new SocChatPanel();
