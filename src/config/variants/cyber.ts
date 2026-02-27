@@ -30,9 +30,10 @@ export const FEEDS: Record<string, Feed[]> = {
 
   // Indonesian Cyber Sources
   indonesia: [
-    { name: 'BSSN News', url: rss('https://www.bssn.go.id/feed/') },
-    { name: 'Indonesia Cyber', url: rss('https://news.google.com/rss/search?q=(BSSN+OR+"Badan+Siber"+OR+Indonesia+cybersecurity+OR+Indonesia+cyber+attack)+when:7d&hl=en-US&gl=US&ceid=US:en') },
-    { name: 'APJII News', url: rss('https://news.google.com/rss/search?q=APJII+OR+"internet+Indonesia"+OR+"digital+Indonesia"+when:7d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Keamanan Siber ID', url: rss('https://news.google.com/rss/search?q=%22keamanan+siber%22+OR+%22BSSN%22+OR+%22serangan+siber%22+OR+%22kebocoran+data%22+when%3A3d&hl=id&gl=ID&ceid=ID%3Aid') },
+    { name: 'Indonesia Cyber', url: rss('https://news.google.com/rss/search?q=Indonesia+%22data+breach%22+OR+%22cyber+attack%22+OR+%22BSSN%22+when%3A7d&hl=en&gl=ID&ceid=ID%3Aen') },
+    { name: 'CNN ID Tekno', url: rss('https://www.cnnindonesia.com/teknologi/rss') },
+    { name: 'Insiden Siber ID', url: rss('https://news.google.com/rss/search?q=%22serangan+siber%22+OR+%22ransomware%22+OR+%22insiden+siber%22+Indonesia+when%3A7d&hl=id&gl=ID&ceid=ID%3Aid') },
   ],
 
   // Threat Intelligence

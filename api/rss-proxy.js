@@ -23,6 +23,7 @@ const ALLOWED_DOMAINS = [
   'news.google.com',
   'www.aljazeera.com',
   'rss.cnn.com',
+  'www.cnnindonesia.com',
   'hnrss.org',
   'feeds.arstechnica.com',
   'www.theverge.com',
