@@ -13,9 +13,16 @@
  *   7. Structured audit logging (every request)
  *   8. Security response headers
  *
+ * Real backend integrations:
+ *   - IOC Scanner: VirusTotal + AbuseIPDB (live threat intel)
+ *   - TAA:         MITRE ATT&CK enrichment (60-technique database)
+ *
  * Protocol: https://a2a-protocol.org/v0.3.0/specification/
  */
 export const config = { runtime: 'edge' };
+
+import { checkIP, checkHash, checkDomain, hasAnyKeys, availableSources } from './_threat-intel.js';
+import { matchTechniques, deriveKillChainStage, maxSeverity, lookupById } from './_mitre-db.js';
 
 // ══════════════════════════════════════════════════════════════════
 //  SECTION 1: SECURITY MIDDLEWARE
@@ -528,7 +535,7 @@ async function handleMessageSend(id, params, secCtx) {
   const taskId = existingTaskId || uid();
   const now = new Date().toISOString();
 
-  const responseText = generateAgentResponse(agent.agentId, userText, skillId);
+  const responseText = await generateAgentResponse(agent.agentId, userText, skillId);
 
   const task = {
     id: taskId,
@@ -650,7 +657,8 @@ function routeToAgent(text, metadata) {
 
   if (/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/.test(text) ||
       /\b[a-f0-9]{32,64}\b/i.test(text) ||
-      /ioc|indicator|lookup|hash|malware|virustotal|threatfox|abuseipdb/i.test(lower)) {
+      /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|xyz|ru|cn|tk|cc|info|biz)\b/i.test(text) ||
+      /ioc|indicator|lookup|hash|malware|virustotal|threatfox|abuseipdb|domain.*check/i.test(lower)) {
     return { skillId: 'ioc-lookup', agent: SKILL_MAP['ioc-lookup'] };
   }
 
@@ -673,161 +681,340 @@ function routeToAgent(text, metadata) {
   return { skillId: 'anomaly-detection', agent: SKILL_MAP['anomaly-detection'] };
 }
 
-function generateAgentResponse(agentId, userText, skillId) {
+async function generateAgentResponse(agentId, userText, skillId) {
   const now = new Date().toISOString();
 
   switch (agentId) {
     case 'ADA':
-      return [
-        `[ADA] Anomaly Detection Analysis — ${now}`,
-        ``,
-        `Query: "${userText.slice(0, 120)}"`,
-        ``,
-        `Scan Results:`,
-        `  - Network traffic baseline: NORMAL (0.3% deviation)`,
-        `  - Endpoint behavioral analysis: 2 anomalies flagged`,
-        `    > Process injection pattern on host WKS-0042 (confidence: 78%)`,
-        `    > Unusual DNS resolution pattern from subnet 10.10.3.0/24 (confidence: 62%)`,
-        `  - SIEM correlation: 14 events matched, 3 above threshold`,
-        `  - ML model confidence: 0.847 (PPO ensemble v4.2)`,
-        ``,
-        `MITRE ATT&CK: T1055 (Process Injection), T1071.004 (DNS)`,
-        `Recommended action: Escalate to TAA for triage analysis`,
-      ].join('\n');
-
+      return generateADAResponse(userText, now);
     case 'TAA':
-      return [
-        `[TAA] Triage & Analysis Report — ${now}`,
-        ``,
-        `Query: "${userText.slice(0, 120)}"`,
-        ``,
-        `Threat Assessment:`,
-        `  - Severity: HIGH`,
-        `  - Confidence: 82%`,
-        `  - Kill Chain Phase: Exploitation → Installation`,
-        `  - Actor Attribution: Possible APT-41 (Winnti) TTP overlap`,
-        `  - Campaign: Operation ShadowNet (tracked since 2025-Q3)`,
-        ``,
-        `IOC Correlation:`,
-        `  - 3 IP addresses matched known C2 infrastructure`,
-        `  - 1 file hash matched ThreatFox entry (Cobalt Strike beacon)`,
-        `  - Domain generation algorithm (DGA) pattern detected`,
-        ``,
-        `MITRE ATT&CK: T1059.001, T1071.001, T1055.012`,
-        `Recommended action: Initiate containment via CRA`,
-      ].join('\n');
-
+      return generateTAAResponse(userText, now);
     case 'CRA':
-      return [
-        `[CRA] Containment & Response Actions — ${now}`,
-        ``,
-        `Query: "${userText.slice(0, 120)}"`,
-        ``,
-        `Response Plan (NIST 800-61 aligned):`,
-        `  1. CONTAIN: Isolate affected endpoint WKS-0042 from network`,
-        `     Status: EXECUTED — endpoint isolated via EDR API`,
-        `  2. CONTAIN: Block C2 IP addresses at perimeter firewall`,
-        `     Status: EXECUTED — 3 IPs added to deny list`,
-        `  3. ERADICATE: Quarantine malicious process (PID 4872)`,
-        `     Status: EXECUTED — process terminated, binary quarantined`,
-        `  4. RECOVER: Initiate credential rotation for affected service accounts`,
-        `     Status: PENDING — requires manual approval`,
-        ``,
-        `Playbook: ransomware-response v1.0 (Step 3/9)`,
-        `SOAR ticket: INC-2026-0847 created`,
-      ].join('\n');
-
+      return generateCRAResponse(userText, now);
     case 'CLA':
-      return [
-        `[CLA] Continuous Learning Report — ${now}`,
-        ``,
-        `Query: "${userText.slice(0, 120)}"`,
-        ``,
-        `Knowledge Base Update:`,
-        `  - Detection model accuracy (30d): 94.2% (+1.3%)`,
-        `  - False positive rate: 6.8% (-0.9%)`,
-        `  - New detection signatures added: 12`,
-        `  - Analyst feedback incorporated: 47 labels`,
-        ``,
-        `Maturity Assessment:`,
-        `  - Identity & Access: Advanced (Level 3)`,
-        `  - Network Segmentation: Initial (Level 2)`,
-        `  - Endpoint Security: Advanced (Level 3)`,
-        `  - Data Protection: Initial (Level 2)`,
-        `  - Visibility & Analytics: Optimal (Level 4)`,
-        ``,
-        `Overall Zero Trust Maturity: Level 2.8 / 4.0`,
-      ].join('\n');
-
+      return generateCLAResponse(userText, now);
     case 'RVA':
-      return [
-        `[RVA] Reporting & Visualization — ${now}`,
-        ``,
-        `Query: "${userText.slice(0, 120)}"`,
-        ``,
-        `SOC Operations Summary (24h):`,
-        `  - Total alerts processed: 1,247`,
-        `  - Critical/High incidents: 8`,
-        `  - Mean Time to Respond: 12 min`,
-        `  - Mean Time to Resolve: 47 min`,
-        `  - Analyst utilization: 78%`,
-        ``,
-        `CII (Cyber Incident Index):`,
-        `  - Indonesia: 8.4 (Standard)`,
-        `  - Myanmar: 72.8 (Elevated)`,
-        `  - Singapore: 3.2 (Standard)`,
-        `  - Regional average: 15.2`,
-        ``,
-        `Top MITRE techniques: T1110 (23%), T1071 (18%), T1059 (12%)`,
-      ].join('\n');
-
-    case 'IOC': {
-      const ips = userText.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g) || [];
-      const hashes = userText.match(/\b[a-f0-9]{32,64}\b/gi) || [];
-
-      const lines = [
-        `[IOC Scanner] Indicator Lookup — ${now}`,
-        ``,
-        `Query: "${userText.slice(0, 120)}"`,
-        ``,
-      ];
-
-      if (ips.length > 0) {
-        for (const ip of ips.slice(0, 3)) {
-          lines.push(`IP: ${ip}`);
-          lines.push(`  AbuseIPDB: Confidence 67%, reported 12 times`);
-          lines.push(`  ThreatFox: Associated with Cobalt Strike C2`);
-          lines.push(`  Verdict: SUSPICIOUS — recommend blocking`);
-          lines.push(``);
-        }
-      }
-
-      if (hashes.length > 0) {
-        for (const hash of hashes.slice(0, 2)) {
-          lines.push(`Hash: ${hash.slice(0, 16)}...${hash.slice(-8)}`);
-          lines.push(`  VirusTotal: 34/72 engines detected`);
-          lines.push(`  Malware family: Cobalt Strike Beacon`);
-          lines.push(`  Verdict: MALICIOUS`);
-          lines.push(``);
-        }
-      }
-
-      if (ips.length === 0 && hashes.length === 0) {
-        lines.push(`No specific IOCs (IPs or hashes) detected in query.`);
-        lines.push(`Provide an IP address, domain, or file hash for lookup.`);
-        lines.push(``);
-        lines.push(`Supported formats:`);
-        lines.push(`  - IPv4: 192.168.1.1`);
-        lines.push(`  - MD5: d41d8cd98f00b204e9800998ecf8427e`);
-        lines.push(`  - SHA256: e3b0c44298fc1c149afbf4c8996fb924...`);
-      }
-
-      return lines.join('\n');
-    }
-
+      return generateRVAResponse(userText, now);
+    case 'IOC':
+      return await generateIOCResponse(userText, now);
     default:
       return `[${agentId}] Analysis complete for: "${userText.slice(0, 100)}"`;
   }
+}
+
+// ── IOC Scanner (REAL BACKEND: VirusTotal + AbuseIPDB) ──────────
+
+async function generateIOCResponse(userText, now) {
+  const ips = userText.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g) || [];
+  const hashes = userText.match(/\b[a-f0-9]{32,64}\b/gi) || [];
+  const domains = userText.match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|xyz|ru|cn|tk|cc|info|biz|top|pw|club|live|online|site|pro|dev|app|cloud)\b/gi) || [];
+
+  const lines = [
+    `[IOC Scanner] Indicator Lookup — ${now}`,
+    ``,
+    `Query: "${userText.slice(0, 120)}"`,
+  ];
+
+  const sources = availableSources();
+  if (sources.length > 0) {
+    lines.push(`Sources: ${sources.join(', ')} (LIVE)`);
+  } else {
+    lines.push(`Sources: None configured — set VIRUSTOTAL_API_KEY and/or ABUSEIPDB_API_KEY for live enrichment`);
+  }
+  lines.push(``);
+
+  // ── IP lookups (parallel) ───────────────────────────────────
+  if (ips.length > 0) {
+    const ipResults = await Promise.allSettled(ips.slice(0, 3).map(ip => checkIP(ip)));
+
+    for (let i = 0; i < ipResults.length; i++) {
+      const r = ipResults[i];
+      const ip = ips[i];
+      if (r.status === 'fulfilled' && r.value.sources.length > 0) {
+        const data = r.value;
+        lines.push(`IP: ${ip}${data.cached ? ' (cached)' : ''}`);
+        lines.push(`  Verdict: ${data.verdict.toUpperCase()} (confidence: ${data.confidence}%)`);
+
+        if (data.abuseipdb) {
+          const a = data.abuseipdb;
+          lines.push(`  AbuseIPDB: Confidence ${a.abuseConfidence}%, ${a.totalReports} reports`);
+          if (a.isp) lines.push(`    ISP: ${a.isp}`);
+          if (a.countryCode) lines.push(`    Country: ${a.countryCode}`);
+          if (a.isTor) lines.push(`    TOR exit node: YES`);
+          if (a.lastReported) lines.push(`    Last reported: ${a.lastReported}`);
+        }
+
+        if (data.virustotal) {
+          const v = data.virustotal;
+          lines.push(`  VirusTotal: ${v.malicious}/${v.totalEngines} engines flagged`);
+          if (v.asOwner) lines.push(`    AS Owner: ${v.asOwner}`);
+          if (v.country) lines.push(`    Country: ${v.country}`);
+          if (v.network) lines.push(`    Network: ${v.network}`);
+        }
+
+        // Recommendation
+        if (data.verdict === 'malicious') {
+          lines.push(`  ⚠ Recommendation: BLOCK immediately, investigate related connections`);
+        } else if (data.verdict === 'suspicious') {
+          lines.push(`  Recommendation: Monitor and consider blocking`);
+        }
+        lines.push(``);
+      } else {
+        // Fallback
+        lines.push(`IP: ${ip}`);
+        lines.push(`  Status: Lookup unavailable (no API keys or API error)`);
+        lines.push(``);
+      }
+    }
+  }
+
+  // ── Hash lookups (parallel) ─────────────────────────────────
+  if (hashes.length > 0) {
+    const hashResults = await Promise.allSettled(hashes.slice(0, 2).map(h => checkHash(h)));
+
+    for (let i = 0; i < hashResults.length; i++) {
+      const r = hashResults[i];
+      const hash = hashes[i];
+      if (r.status === 'fulfilled' && r.value.sources.length > 0) {
+        const data = r.value;
+        lines.push(`Hash: ${hash.slice(0, 16)}...${hash.slice(-8)} (${data.type})`);
+        lines.push(`  Verdict: ${data.verdict.toUpperCase()}`);
+
+        if (data.virustotal && data.verdict !== 'not_found') {
+          const v = data.virustotal;
+          lines.push(`  VirusTotal: ${v.malicious}/${v.totalEngines} engines detected`);
+          if (v.popularThreatName) lines.push(`    Threat: ${v.popularThreatName}`);
+          if (v.fileName) lines.push(`    File: ${v.fileName}`);
+          if (v.fileType) lines.push(`    Type: ${v.fileType}`);
+          if (v.tags?.length > 0) lines.push(`    Tags: ${v.tags.join(', ')}`);
+        } else if (data.verdict === 'not_found') {
+          lines.push(`  VirusTotal: Hash not found in database`);
+        }
+        lines.push(``);
+      } else {
+        lines.push(`Hash: ${hash.slice(0, 16)}...${hash.slice(-8)}`);
+        lines.push(`  Status: Lookup unavailable`);
+        lines.push(``);
+      }
+    }
+  }
+
+  // ── Domain lookups (parallel) ───────────────────────────────
+  if (domains.length > 0) {
+    const domainResults = await Promise.allSettled(domains.slice(0, 2).map(d => checkDomain(d)));
+
+    for (let i = 0; i < domainResults.length; i++) {
+      const r = domainResults[i];
+      const domain = domains[i];
+      if (r.status === 'fulfilled' && r.value.sources.length > 0) {
+        const data = r.value;
+        lines.push(`Domain: ${domain}`);
+        lines.push(`  Verdict: ${data.verdict.toUpperCase()}`);
+
+        if (data.virustotal && data.verdict !== 'not_found') {
+          const v = data.virustotal;
+          lines.push(`  VirusTotal: ${v.malicious}/${v.totalEngines} engines flagged`);
+          if (v.registrar) lines.push(`    Registrar: ${v.registrar}`);
+          if (v.creationDate) lines.push(`    Created: ${v.creationDate}`);
+          if (v.categories?.length > 0) lines.push(`    Categories: ${v.categories.join(', ')}`);
+        }
+        lines.push(``);
+      } else {
+        lines.push(`Domain: ${domain}`);
+        lines.push(`  Status: Lookup unavailable`);
+        lines.push(``);
+      }
+    }
+  }
+
+  if (ips.length === 0 && hashes.length === 0 && domains.length === 0) {
+    lines.push(`No IOCs (IPs, hashes, or domains) detected in query.`);
+    lines.push(`Provide indicators for lookup. Supported formats:`);
+    lines.push(`  - IPv4: 8.8.8.8`);
+    lines.push(`  - MD5: d41d8cd98f00b204e9800998ecf8427e`);
+    lines.push(`  - SHA256: e3b0c44298fc1c149afbf4c8996fb92...`);
+    lines.push(`  - Domain: example.com`);
+  }
+
+  return lines.join('\n');
+}
+
+// ── TAA (REAL BACKEND: MITRE ATT&CK enrichment) ────────────────
+
+function generateTAAResponse(userText, now) {
+  const techniques = matchTechniques(userText, 5);
+  const sev = maxSeverity(techniques);
+  const killChain = deriveKillChainStage(techniques);
+
+  const lines = [
+    `[TAA] Triage & Analysis Report — ${now}`,
+    ``,
+    `Query: "${userText.slice(0, 120)}"`,
+    ``,
+  ];
+
+  if (techniques.length > 0) {
+    lines.push(`Threat Assessment:`);
+    lines.push(`  Severity: ${sev.label.toUpperCase()}`);
+    lines.push(`  Kill Chain Stage: ${killChain}`);
+    lines.push(`  Techniques Matched: ${techniques.length}`);
+    lines.push(``);
+
+    lines.push(`MITRE ATT&CK Mapping:`);
+    for (const t of techniques) {
+      lines.push(`  ${t.id} — ${t.name} [${t.tacticName}] (${t.severityLabel})`);
+      lines.push(`    ${t.desc}`);
+      lines.push(`    Detection: ${t.detect}`);
+      lines.push(``);
+    }
+
+    // Tactical recommendations based on kill chain stage
+    lines.push(`Recommendations:`);
+    const tactics = [...new Set(techniques.map(t => t.tactic))];
+    if (tactics.includes('IA') || tactics.includes('RA')) {
+      lines.push(`  - Harden perimeter defenses, review exposed services`);
+      lines.push(`  - Check email gateway for recent phishing attempts`);
+    }
+    if (tactics.includes('EX') || tactics.includes('PV')) {
+      lines.push(`  - Enable enhanced endpoint logging (Sysmon, EDR)`);
+      lines.push(`  - Review process execution chains for anomalies`);
+    }
+    if (tactics.includes('CR')) {
+      lines.push(`  - Enforce credential rotation for affected accounts`);
+      lines.push(`  - Enable Credential Guard / LSASS protection`);
+    }
+    if (tactics.includes('LM')) {
+      lines.push(`  - Review lateral movement paths, segment network`);
+      lines.push(`  - Check for unusual remote service connections`);
+    }
+    if (tactics.includes('C2') || tactics.includes('EF')) {
+      lines.push(`  - Analyze outbound traffic for C2 beacons`);
+      lines.push(`  - Block identified C2 indicators at firewall`);
+    }
+    if (tactics.includes('IM')) {
+      lines.push(`  - Verify backup integrity, activate incident response`);
+      lines.push(`  - Escalate to CRA for immediate containment`);
+    }
+
+    lines.push(``);
+    lines.push(`Next step: Escalate to CRA for containment actions`);
+  } else {
+    // No technique matches — provide general triage
+    lines.push(`No specific MITRE ATT&CK techniques matched from query.`);
+    lines.push(``);
+    lines.push(`General Triage Guidance:`);
+    lines.push(`  - Provide more context: IOC types, affected systems, observed behavior`);
+    lines.push(`  - Include specific keywords: phishing, ransomware, C2, credential dump, etc.`);
+    lines.push(`  - Reference MITRE technique IDs directly (e.g., T1566, T1059)`);
+    lines.push(``);
+    lines.push(`Available analysis capabilities:`);
+    lines.push(`  - Keyword → MITRE ATT&CK mapping (60+ techniques)`);
+    lines.push(`  - Kill chain stage determination`);
+    lines.push(`  - Detection guidance per technique`);
+    lines.push(`  - Tactical response recommendations`);
+  }
+
+  return lines.join('\n');
+}
+
+// ── ADA (template — needs ML model backend) ─────────────────────
+
+function generateADAResponse(userText, now) {
+  // MITRE enrichment via keyword matching
+  const techniques = matchTechniques(userText, 3);
+  const mitreStr = techniques.length > 0
+    ? techniques.map(t => `${t.id} (${t.name})`).join(', ')
+    : 'T1055 (Process Injection), T1071.004 (DNS)';
+
+  return [
+    `[ADA] Anomaly Detection Analysis — ${now}`,
+    ``,
+    `Query: "${userText.slice(0, 120)}"`,
+    ``,
+    `Scan Results:`,
+    `  - Network traffic baseline: NORMAL (0.3% deviation)`,
+    `  - Endpoint behavioral analysis: 2 anomalies flagged`,
+    `    > Process injection pattern on host WKS-0042 (confidence: 78%)`,
+    `    > Unusual DNS resolution pattern from subnet 10.10.3.0/24 (confidence: 62%)`,
+    `  - SIEM correlation: 14 events matched, 3 above threshold`,
+    `  - ML model confidence: 0.847 (PPO ensemble v4.2)`,
+    ``,
+    `MITRE ATT&CK: ${mitreStr}`,
+    `Recommended action: Escalate to TAA for triage analysis`,
+  ].join('\n');
+}
+
+// ── CRA (template — needs SOAR/EDR backend) ─────────────────────
+
+function generateCRAResponse(userText, now) {
+  return [
+    `[CRA] Containment & Response Actions — ${now}`,
+    ``,
+    `Query: "${userText.slice(0, 120)}"`,
+    ``,
+    `Response Plan (NIST 800-61 aligned):`,
+    `  1. CONTAIN: Isolate affected endpoint WKS-0042 from network`,
+    `     Status: EXECUTED — endpoint isolated via EDR API`,
+    `  2. CONTAIN: Block C2 IP addresses at perimeter firewall`,
+    `     Status: EXECUTED — 3 IPs added to deny list`,
+    `  3. ERADICATE: Quarantine malicious process (PID 4872)`,
+    `     Status: EXECUTED — process terminated, binary quarantined`,
+    `  4. RECOVER: Initiate credential rotation for affected service accounts`,
+    `     Status: PENDING — requires manual approval`,
+    ``,
+    `Playbook: ransomware-response v1.0 (Step 3/9)`,
+    `SOAR ticket: INC-2026-0847 created`,
+  ].join('\n');
+}
+
+// ── CLA (template — needs ML infrastructure) ────────────────────
+
+function generateCLAResponse(userText, now) {
+  return [
+    `[CLA] Continuous Learning Report — ${now}`,
+    ``,
+    `Query: "${userText.slice(0, 120)}"`,
+    ``,
+    `Knowledge Base Update:`,
+    `  - Detection model accuracy (30d): 94.2% (+1.3%)`,
+    `  - False positive rate: 6.8% (-0.9%)`,
+    `  - New detection signatures added: 12`,
+    `  - Analyst feedback incorporated: 47 labels`,
+    ``,
+    `Maturity Assessment:`,
+    `  - Identity & Access: Advanced (Level 3)`,
+    `  - Network Segmentation: Initial (Level 2)`,
+    `  - Endpoint Security: Advanced (Level 3)`,
+    `  - Data Protection: Initial (Level 2)`,
+    `  - Visibility & Analytics: Optimal (Level 4)`,
+    ``,
+    `Overall Zero Trust Maturity: Level 2.8 / 4.0`,
+  ].join('\n');
+}
+
+// ── RVA (template — needs BigQuery backend) ─────────────────────
+
+function generateRVAResponse(userText, now) {
+  return [
+    `[RVA] Reporting & Visualization — ${now}`,
+    ``,
+    `Query: "${userText.slice(0, 120)}"`,
+    ``,
+    `SOC Operations Summary (24h):`,
+    `  - Total alerts processed: 1,247`,
+    `  - Critical/High incidents: 8`,
+    `  - Mean Time to Respond: 12 min`,
+    `  - Mean Time to Resolve: 47 min`,
+    `  - Analyst utilization: 78%`,
+    ``,
+    `CII (Cyber Incident Index):`,
+    `  - Indonesia: 8.4 (Standard)`,
+    `  - Myanmar: 72.8 (Elevated)`,
+    `  - Singapore: 3.2 (Standard)`,
+    `  - Regional average: 15.2`,
+    ``,
+    `Top MITRE techniques: T1110 (23%), T1071 (18%), T1059 (12%)`,
+  ].join('\n');
 }
 
 // ══════════════════════════════════════════════════════════════════
