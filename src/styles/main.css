@@ -11466,7 +11466,8 @@ a.prediction-link:hover {
 }
 
 /* ── Drill-Down & 360° Orbit Controls ──────────────────────────── */
-.deckgl-controls .drill-group {
+.deckgl-controls .drill-group,
+.map-controls .drill-group {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -11476,7 +11477,9 @@ a.prediction-link:hover {
 }
 
 .deckgl-controls .drill-btn,
-.deckgl-controls .orbit-btn {
+.deckgl-controls .orbit-btn,
+.map-controls .drill-btn,
+.map-controls .orbit-btn {
   width: 32px;
   height: 32px;
   background: var(--bg);
@@ -11494,19 +11497,21 @@ a.prediction-link:hover {
 }
 
 .deckgl-controls .drill-btn:hover,
-.deckgl-controls .orbit-btn:hover {
+.deckgl-controls .orbit-btn:hover,
+.map-controls .drill-btn:hover,
+.map-controls .orbit-btn:hover {
   border-color: var(--green);
   color: var(--text);
 }
 
-.deckgl-controls .drill-btn.active {
+.drill-btn.active {
   background: rgba(68, 255, 136, 0.1);
   border-color: var(--green);
   color: var(--green);
   box-shadow: 0 0 6px rgba(68, 255, 136, 0.2);
 }
 
-.deckgl-controls .orbit-btn.active {
+.orbit-btn.active {
   background: rgba(255, 170, 0, 0.1);
   border-color: #ffaa00;
   color: #ffaa00;
@@ -11519,13 +11524,14 @@ a.prediction-link:hover {
   50%      { box-shadow: 0 0 14px rgba(255, 170, 0, 0.4); }
 }
 
-.deckgl-controls .orbit-speed-group {
+.deckgl-controls .orbit-speed-group,
+.map-controls .orbit-speed-group {
   display: flex;
   gap: 1px;
   overflow: hidden;
 }
 
-.deckgl-controls .orbit-speed-btn {
+.orbit-speed-btn {
   flex: 1;
   padding: 2px 0;
   background: var(--bg);
@@ -11539,12 +11545,12 @@ a.prediction-link:hover {
   text-align: center;
 }
 
-.deckgl-controls .orbit-speed-btn:hover {
+.orbit-speed-btn:hover {
   border-color: var(--green);
   color: var(--text);
 }
 
-.deckgl-controls .orbit-speed-btn.active {
+.orbit-speed-btn.active {
   background: rgba(68, 255, 136, 0.08);
   border-color: var(--green);
   color: var(--green);

@@ -241,6 +241,15 @@ export class MapComponent {
       <button class="map-control-btn" data-action="zoom-in">+</button>
       <button class="map-control-btn" data-action="zoom-out">−</button>
       <button class="map-control-btn" data-action="reset">⟲</button>
+      <div class="drill-group">
+        <button class="map-control-btn drill-btn" data-action="drill" title="${t('components.deckgl.drillDown')}">⬇</button>
+        <button class="map-control-btn orbit-btn" data-action="orbit" title="${t('components.deckgl.orbit')}">◎</button>
+        <div class="orbit-speed-group">
+          <button class="orbit-speed-btn" data-orbit-speed="3">${t('components.deckgl.slow')}</button>
+          <button class="orbit-speed-btn active" data-orbit-speed="9">${t('components.deckgl.med')}</button>
+          <button class="orbit-speed-btn" data-orbit-speed="24">${t('components.deckgl.fast')}</button>
+        </div>
+      </div>
     `;
 
     controls.addEventListener('click', (e) => {
@@ -249,10 +258,83 @@ export class MapComponent {
       if (action === 'zoom-in') this.zoomIn();
       else if (action === 'zoom-out') this.zoomOut();
       else if (action === 'reset') this.reset();
+      else if (action === 'drill') this.handleDrillDown(target);
+      else if (action === 'orbit') this.handleOrbitToggle(target);
+
+      // Speed button handling
+      const speed = target.dataset.orbitSpeed;
+      if (speed) {
+        this.orbitSpeed = parseFloat(speed);
+        controls.querySelectorAll('.orbit-speed-btn').forEach(b => {
+          b.classList.toggle('active', b === target);
+        });
+      }
     });
 
     return controls;
   }
+
+  // ── Drill-Down & Orbit state ───────────────────────────
+  private drillDownActive = false;
+  private preDrillZoom = 1;
+  private preDrillPan = { x: 0, y: 0 };
+  private orbitEnabled = false;
+  private orbitSpeed = 9;
+  private orbitAnimationId: number | null = null;
+  private lastOrbitTimestamp = 0;
+
+  private handleDrillDown(btn: HTMLElement): void {
+    if (this.drillDownActive) {
+      // Exit drill-down — restore state
+      this.drillDownActive = false;
+      btn.textContent = '⬇';
+      btn.title = t('components.deckgl.drillDown');
+      btn.classList.remove('active');
+      this.state.zoom = this.preDrillZoom;
+      this.state.pan = { ...this.preDrillPan };
+      if (this.orbitEnabled) {
+        const orbitBtn = this.container.querySelector('.orbit-btn') as HTMLElement | null;
+        if (orbitBtn) this.handleOrbitToggle(orbitBtn);
+      }
+      this.render();
+    } else {
+      // Drill down — zoom to 8x
+      this.drillDownActive = true;
+      this.preDrillZoom = this.state.zoom;
+      this.preDrillPan = { ...this.state.pan };
+      btn.textContent = '⬆';
+      btn.title = t('components.deckgl.exitDrill');
+      btn.classList.add('active');
+      this.state.zoom = Math.max(this.state.zoom, 8);
+      this.render();
+    }
+  }
+
+  private handleOrbitToggle(btn: HTMLElement): void {
+    this.orbitEnabled = !this.orbitEnabled;
+    btn.classList.toggle('active', this.orbitEnabled);
+    btn.title = this.orbitEnabled ? t('components.deckgl.orbitOn') : t('components.deckgl.orbit');
+
+    if (this.orbitEnabled) {
+      this.lastOrbitTimestamp = performance.now();
+      this.orbitAnimationId = requestAnimationFrame(this.orbitFrame);
+    } else if (this.orbitAnimationId) {
+      cancelAnimationFrame(this.orbitAnimationId);
+      this.orbitAnimationId = null;
+    }
+  }
+
+  private orbitFrame = (timestamp: number): void => {
+    if (!this.orbitEnabled) { this.orbitAnimationId = null; return; }
+    const dt = Math.min((timestamp - this.lastOrbitTimestamp) / 1000, 0.1);
+    this.lastOrbitTimestamp = timestamp;
+
+    // Simulate orbit by panning horizontally
+    const panDelta = this.orbitSpeed * dt * 2;
+    this.state.pan.x -= panDelta;
+    this.render();
+    this.orbitAnimationId = requestAnimationFrame(this.orbitFrame);
+  };
 
   private createTimeSlider(): HTMLElement {
     const slider = document.createElement('div');
