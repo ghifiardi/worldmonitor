@@ -375,10 +375,62 @@ function generateMockLookupResult(query: string, iocType: IoCType): IoCLookupRes
   };
 }
 
+// ── VirusTotal via server proxy ──────────────────────────────────────
+
+async function queryVirusTotal(query: string, iocType: IoCType): Promise<IoCSource | null> {
+  if (iocType === 'unknown') return null;
+
+  try {
+    const resp = await fetch(`/api/ioc-lookup?q=${encodeURIComponent(query)}&type=${iocType}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (resp.status === 503) {
+      // VT API key not configured — silently skip
+      return null;
+    }
+    if (resp.status === 429) {
+      return {
+        name: 'VirusTotal',
+        verdict: 'rate limited',
+        details: 'VirusTotal rate limited (4 req/min free tier). Try again shortly.',
+        url: null,
+      };
+    }
+    if (!resp.ok) return null;
+
+    const data = await resp.json();
+    if (!data || data.error) return null;
+
+    // Build VT source entry
+    const vtUrl = data.link || `https://www.virustotal.com/gui/search/${encodeURIComponent(query)}`;
+    const detections = `${data.malicious ?? 0}/${data.totalEngines ?? 0} engines`;
+    const extras: string[] = [];
+
+    if (data.popularThreatName) extras.push(`Threat: ${data.popularThreatName}`);
+    if (data.fileName) extras.push(`File: ${data.fileName}`);
+    if (data.fileType) extras.push(`Type: ${data.fileType}`);
+    if (data.asOwner) extras.push(`ASN: ${data.asOwner}`);
+    if (data.country) extras.push(`Country: ${data.country}`);
+    if (data.registrar) extras.push(`Registrar: ${data.registrar}`);
+    if (data.tags?.length) extras.push(`Tags: ${data.tags.join(', ')}`);
+
+    return {
+      name: 'VirusTotal',
+      verdict: data.verdict === 'not_found' ? 'not found' : data.verdict || 'unknown',
+      details: `Detections: ${detections}${extras.length ? ' | ' + extras.join(' | ') : ''}`,
+      url: vtUrl,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ── Public API ───────────────────────────────────────────────────────
 
 /**
  * Look up an IoC (IP, domain, hash, URL) across multiple threat intel APIs.
+ * Queries: ThreatFox, URLhaus, MalwareBazaar (direct), VirusTotal (via server proxy).
  * Results are cached for 5 minutes.
  */
 export async function lookupIoC(query: string): Promise<IoCLookupResult> {
@@ -391,11 +443,12 @@ export async function lookupIoC(query: string): Promise<IoCLookupResult> {
 
   const iocType = detectIoCType(trimmed);
 
-  // Query all relevant APIs in parallel
-  const [threatFoxResult, urlhausResult, malwareBazaarResult] = await Promise.all([
+  // Query all relevant APIs in parallel (including VirusTotal via server proxy)
+  const [threatFoxResult, urlhausResult, malwareBazaarResult, virusTotalResult] = await Promise.all([
     queryThreatFox(trimmed, iocType),
     queryURLhaus(trimmed, iocType),
     queryMalwareBazaar(trimmed, iocType),
+    queryVirusTotal(trimmed, iocType),
   ]);
 
   const sources: IoCSource[] = [];
@@ -432,6 +485,18 @@ export async function lookupIoC(query: string): Promise<IoCLookupResult> {
     if (malwareBazaarResult.verdict.includes('malicious')) {
       hasMalicious = true;
       maxConfidence = Math.max(maxConfidence, 90);
+    }
+  }
+
+  // Process VirusTotal
+  if (virusTotalResult) {
+    sources.push(virusTotalResult);
+    if (virusTotalResult.verdict === 'malicious') {
+      hasMalicious = true;
+      maxConfidence = Math.max(maxConfidence, 95);
+    } else if (virusTotalResult.verdict === 'suspicious') {
+      hasSuspicious = true;
+      maxConfidence = Math.max(maxConfidence, 60);
     }
   }
 

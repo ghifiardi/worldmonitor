@@ -84,8 +84,12 @@ const GATRA_AGENTS: GatraAgentDef[] = [
       /mitre|att&ck|kill\s*chain|technique|tactic/i,
       /triag/i, /prioriti/i, /escalat/i,
       /what.*(should|next|first)/i, /rank|order/i, /queue/i,
-      // Expanded: threat intel, APTs, IOCs, phishing, social engineering, campaigns
-      /apt[\s-]?\d+|threat\s*actor|adversar/i,
+      // Expanded: threat intel, APTs (numbered + named), IOCs, phishing, social engineering, campaigns
+      /apt[\s-]?(\d+|elfin|charming[\s-]?kitten|muddy[\s-]?water|shamoon|cozy[\s-]?bear|fancy[\s-]?bear|lazarus|sandworm|double[\s-]?dragon|ocean[\s-]?lotus|turla|equation[\s-]?group|kimsuky|winnti|hafnium|phosphorus|helix[\s-]?kitten|remix[\s-]?kitten|magic[\s-]?hound|news[\s-]?beef|cobalt[\s-]?mirage)/i,
+      /threat\s*actor|adversar/i,
+      /elfin|charming[\s-]?kitten|muddy[\s-]?water|shamoon|apt\d+/i,
+      /cozy[\s-]?bear|fancy[\s-]?bear|lazarus|sandworm|double[\s-]?dragon/i,
+      /helix[\s-]?kitten|magic[\s-]?hound|phosphorus|hafnium|kimsuky|turla/i,
       /ioc|indicator.*compromise|intel(ligence)?.*feed/i,
       /phish|spear\s*phish|social\s*engineer|bec|business\s*email/i,
       /campaign|ttps?|dark\s*web|underground/i,
@@ -181,7 +185,7 @@ const GENERAL_CYBER_PATTERNS: RegExp[] = [
   /api\s*secur|oauth|jwt|token/i,
   /container|kubernetes|docker|k8s.*secur/i,
   /threat\s*model|stride|dread/i,
-  /xss|sqli|sql\s*inject|csrf|ssrf|rce|lfi|rfi/i,
+  /\bxss\b|\bsqli\b|sql\s*inject|\bcsrf\b|\bssrf\b|\brce\b|\blfi\b|\brfi\b|file\s*inclusion/i,
   /buffer\s*overflow|heap|stack\s*overflow|memory\s*corrupt/i,
 ];
 
@@ -534,25 +538,162 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
           `Ask about specific techniques or request full triage queue.`;
       }
 
-      // APT / threat actor / nation-state / attribution
-      if (/apt[\s-]?\d+|threat\s*actor|adversar|nation[\s-]?state|cyber\s*espionage|attribution/i.test(message)) {
-        const aptMatch = message.match(/apt[\s-]?\d+/i);
+      // APT / threat actor / nation-state / attribution (supports both numbered APTs and named groups)
+      if (/apt[\s-]?(\d+|\w+)|threat\s*actor|adversar|nation[\s-]?state|cyber\s*espionage|attribution|elfin|charming[\s-]?kitten|muddy[\s-]?water|shamoon|cozy[\s-]?bear|fancy[\s-]?bear|lazarus|sandworm|double[\s-]?dragon|helix[\s-]?kitten|magic[\s-]?hound|phosphorus|hafnium|kimsuky|turla|ocean[\s-]?lotus|winnti|equation[\s-]?group|remix[\s-]?kitten|news[\s-]?beef|cobalt[\s-]?mirage/i.test(message)) {
+        const aptNumMatch = message.match(/apt[\s-]?\d+/i);
         const techniques = [...new Set(alerts.map(a => a.mitreId))].slice(0, 4);
+
+        // Named APT group matching — resolve aliases to canonical names
+        const aptGroupDb: Record<string, { canonical: string; aliases: string[]; nation: string; description: string; ttps: string; targets: string; campaigns: string }> = {
+          'elfin': {
+            canonical: 'APT-33 / Elfin / Refined Kitten',
+            aliases: ['APT33', 'APT-33', 'Elfin', 'Refined Kitten', 'Magnallium', 'Holmium'],
+            nation: 'Iran (IRGC-linked)',
+            description: 'Iranian state-sponsored espionage group active since at least 2013. Targets aviation, energy, petrochemical industries. Known for destructive wiper attacks and credential harvesting campaigns.',
+            ttps: 'T1566.001 (spearphishing attachment), T1059.001 (PowerShell), T1003 (credential dumping), T1486 (data destruction via Shamoon-linked wipers), T1071 (C2 over HTTP/S), T1078 (valid accounts via password spraying)',
+            targets: 'Saudi Arabia (Aramco), US defense/aviation, South Korea, EU energy sector',
+            campaigns: 'Shamoon 2/3 wiper campaigns, Operation Cleaver, Boeing/Lockheed Martin targeting, Saudi Aramco infrastructure attacks',
+          },
+          'charming': {
+            canonical: 'APT-35 / Charming Kitten / Phosphorus',
+            aliases: ['APT35', 'APT-35', 'Charming Kitten', 'Phosphorus', 'NewsBeef', 'Magic Hound', 'Cobalt Illusion', 'ITG18', 'TA453', 'Yellow Garuda', 'Mint Sandstorm'],
+            nation: 'Iran (IRGC Intelligence Organization)',
+            description: 'Iranian state-sponsored espionage group active since at least 2014. Focused on surveillance of dissidents, journalists, diplomats, and defense sector. Known for sophisticated social engineering and impersonation campaigns.',
+            ttps: 'T1566.002 (spearphishing link), T1598 (phishing for information), T1189 (drive-by compromise), T1059.001 (PowerShell), T1555 (credentials from password stores), T1114 (email collection), T1005 (data from local system)',
+            targets: 'US/EU government officials, Iranian diaspora & journalists, Middle East defense, academic researchers, think tanks, human rights organizations',
+            campaigns: 'SpoofedScholars, BadBlood, Operation Saffron Rose, COVID-19 vaccine research theft, 2020 US election interference attempts, HBO data breach',
+          },
+          'muddywater': {
+            canonical: 'MuddyWater / Mercury / Static Kitten',
+            aliases: ['MuddyWater', 'Mercury', 'Static Kitten', 'Seedworm', 'TEMP.Zagros', 'Mango Sandstorm'],
+            nation: 'Iran (MOIS — Ministry of Intelligence)',
+            description: 'Iranian state-sponsored group conducting espionage across Middle East, South Asia, and Europe. Known for "living off the land" techniques and custom backdoors. Distinguished from IRGC groups by MOIS attribution.',
+            ttps: 'T1566.001 (spearphishing), T1059.001 (PowerShell), T1047 (WMI), T1218 (signed binary proxy execution), T1071 (C2 via legitimate cloud services), T1027 (obfuscated files)',
+            targets: 'Government, telecom, energy sectors in Middle East, Turkey, Pakistan, India, Central Asia, EU',
+            campaigns: 'PowGoop backdoor, Small Sieve operations, Earth Vetala, MuddyC2Go framework',
+          },
+          'shamoon': {
+            canonical: 'Shamoon / Disttrack (linked to APT-33/Iran)',
+            aliases: ['Shamoon', 'Disttrack', 'StoneDrill'],
+            nation: 'Iran (attributed)',
+            description: 'Destructive wiper malware family first deployed against Saudi Aramco in 2012, destroying 35,000 workstations. Resurfaced in 2016-2017 (Shamoon 2/3) targeting Saudi and Gulf state organizations. Linked to APT-33/Elfin.',
+            ttps: 'T1485 (data destruction), T1561 (disk wipe — overwrites MBR), T1486 (data encrypted for impact), T1059 (scripting), T1021 (remote services for lateral movement)',
+            targets: 'Saudi Aramco, RasGas, Saudi government, Gulf state energy/petrochemical sector',
+            campaigns: 'Shamoon 1 (2012 — 35K systems wiped at Aramco), Shamoon 2 (2016), Shamoon 3 (2018 — Saipem attack)',
+          },
+          'lazarus': {
+            canonical: 'Lazarus Group / Hidden Cobra / ZINC',
+            aliases: ['Lazarus', 'Hidden Cobra', 'ZINC', 'Diamond Sleet', 'Labyrinth Chollima'],
+            nation: 'North Korea (RGB)',
+            description: 'North Korean state-sponsored group conducting both espionage and financially-motivated operations. Responsible for some of the most destructive and high-profile cyber attacks in history.',
+            ttps: 'T1486 (ransomware/WannaCry), T1490 (inhibit recovery), T1027 (obfuscation), T1059 (scripting), T1566 (spearphishing), T1195 (supply chain compromise)',
+            targets: 'Financial institutions (SWIFT attacks), cryptocurrency exchanges, defense, entertainment (Sony Pictures)',
+            campaigns: 'WannaCry (2017), SWIFT bank heists ($81M Bangladesh Bank), Sony Pictures hack (2014), Operation Dream Job, AppleJeus cryptocurrency campaigns',
+          },
+          'cozybear': {
+            canonical: 'APT-29 / Cozy Bear / Midnight Blizzard',
+            aliases: ['APT29', 'APT-29', 'Cozy Bear', 'The Dukes', 'Midnight Blizzard', 'Nobelium'],
+            nation: 'Russia (SVR — Foreign Intelligence Service)',
+            description: 'Russian state-sponsored espionage group associated with SVR. Specializes in long-term stealthy access to government and diplomatic targets. Responsible for SolarWinds supply chain attack.',
+            ttps: 'T1566 (spearphishing), T1059 (PowerShell), T1071 (web protocols C2), T1195.002 (supply chain — SolarWinds), T1550 (pass the hash/ticket)',
+            targets: 'US/EU government, diplomatic entities, think tanks, political organizations, IT service providers',
+            campaigns: 'SolarWinds/SUNBURST (2020), DNC hack (2016), Microsoft/HPE breaches (2023-24), EU diplomatic targeting',
+          },
+          'fancybear': {
+            canonical: 'APT-28 / Fancy Bear / Forest Blizzard',
+            aliases: ['APT28', 'APT-28', 'Fancy Bear', 'Sofacy', 'Pawn Storm', 'Sednit', 'Forest Blizzard', 'Strontium'],
+            nation: 'Russia (GRU Unit 26165)',
+            description: 'Russian military intelligence (GRU) cyber espionage group. Known for aggressive operations combining espionage with influence operations. Targets NATO, defense, and government entities.',
+            ttps: 'T1566 (spearphishing), T1190 (exploit public-facing apps), T1003 (credential dumping), T1059 (command execution), T1583 (acquire infrastructure)',
+            targets: 'NATO countries, defense ministries, international sports organizations, political campaigns, media',
+            campaigns: 'DNC/DCCC hack (2016), Bundestag hack, WADA/Olympic anti-doping targeting, Ukraine military app exploit',
+          },
+          'sandworm': {
+            canonical: 'Sandworm / Voodoo Bear / Seashell Blizzard',
+            aliases: ['Sandworm', 'Voodoo Bear', 'Seashell Blizzard', 'Iridium', 'TeleBots'],
+            nation: 'Russia (GRU Unit 74455)',
+            description: 'Russian military intelligence unit responsible for some of the most destructive cyber attacks in history. Specializes in critical infrastructure disruption and destructive operations.',
+            ttps: 'T1485 (data destruction), T1489 (service stop), T1562 (impair defenses), T1059 (scripting), T1190 (exploit public apps)',
+            targets: 'Ukrainian power grid, global shipping (Maersk), French elections, 2018 Olympics',
+            campaigns: 'NotPetya ($10B+ damage, 2017), BlackEnergy/Industroyer (Ukraine grid attacks 2015-16), Olympic Destroyer (2018), Cyclops Blink',
+          },
+          'turla': {
+            canonical: 'Turla / Snake / Venomous Bear / Secret Blizzard',
+            aliases: ['Turla', 'Snake', 'Venomous Bear', 'Uroburos', 'Waterbug', 'Secret Blizzard'],
+            nation: 'Russia (FSB — Center 16)',
+            description: 'One of the most sophisticated Russian espionage groups, active since at least 2004. Known for complex malware platforms and hijacking other threat actors\' infrastructure.',
+            ttps: 'T1071 (C2 over satellite links), T1027 (multi-layer obfuscation), T1059 (scripting), T1584 (compromise infrastructure of other APTs)',
+            targets: 'Government, military, diplomatic entities in 45+ countries, particularly targeting Middle East and former Soviet states',
+            campaigns: 'Snake/Uroburos rootkit, ComRAT backdoor, LightNeuron Exchange backdoor, hijacking of APT-34 (Iran) infrastructure',
+          },
+          'kimsuky': {
+            canonical: 'Kimsuky / Emerald Sleet / Velvet Chollima',
+            aliases: ['Kimsuky', 'Emerald Sleet', 'Velvet Chollima', 'Thallium', 'Black Banshee'],
+            nation: 'North Korea (RGB)',
+            description: 'North Korean espionage group focused on intelligence collection related to foreign policy, nuclear issues, and inter-Korean relations.',
+            ttps: 'T1566 (spearphishing), T1059 (scripting), T1555 (credential access), T1114 (email collection), T1005 (data from local system)',
+            targets: 'South Korean government, think tanks, nuclear policy researchers, US/Japan defense entities',
+            campaigns: 'BabyShark, AppleSeed, Operation Kabar Cobra, targeting South Korean unification efforts',
+          },
+        };
+
+        // Find which named group was queried
+        let matchedGroup: { canonical: string; aliases: string[]; nation: string; description: string; ttps: string; targets: string; campaigns: string } | null = null;
+        if (/elfin|apt[\s-]?33|refined[\s-]?kitten|magnallium|holmium/i.test(message)) matchedGroup = aptGroupDb['elfin'] ?? null;
+        else if (/charming[\s-]?kitten|apt[\s-]?35|phosphorus|newsbeef|news[\s-]?beef|magic[\s-]?hound|cobalt[\s-]?illusion|ta453|mint[\s-]?sandstorm/i.test(message)) matchedGroup = aptGroupDb['charming'] ?? null;
+        else if (/muddy[\s-]?water|mercury|static[\s-]?kitten|seedworm|mango[\s-]?sandstorm/i.test(message)) matchedGroup = aptGroupDb['muddywater'] ?? null;
+        else if (/shamoon|disttrack|stone[\s-]?drill/i.test(message)) matchedGroup = aptGroupDb['shamoon'] ?? null;
+        else if (/lazarus|hidden[\s-]?cobra|zinc|diamond[\s-]?sleet|labyrinth/i.test(message)) matchedGroup = aptGroupDb['lazarus'] ?? null;
+        else if (/cozy[\s-]?bear|apt[\s-]?29|midnight[\s-]?blizzard|nobelium|the[\s-]?dukes/i.test(message)) matchedGroup = aptGroupDb['cozybear'] ?? null;
+        else if (/fancy[\s-]?bear|apt[\s-]?28|sofacy|pawn[\s-]?storm|sednit|forest[\s-]?blizzard|strontium/i.test(message)) matchedGroup = aptGroupDb['fancybear'] ?? null;
+        else if (/sandworm|voodoo[\s-]?bear|seashell[\s-]?blizzard|iridium|telebots/i.test(message)) matchedGroup = aptGroupDb['sandworm'] ?? null;
+        else if (/turla|snake|venomous[\s-]?bear|uroburos|waterbug|secret[\s-]?blizzard/i.test(message)) matchedGroup = aptGroupDb['turla'] ?? null;
+        else if (/kimsuky|emerald[\s-]?sleet|velvet[\s-]?chollima|thallium|black[\s-]?banshee/i.test(message)) matchedGroup = aptGroupDb['kimsuky'] ?? null;
+
+        // If a specific group was matched, return detailed intelligence
+        if (matchedGroup) {
+          return `🎯 TAA — Threat Actor Intelligence Report\n\n` +
+            `━━━ ${matchedGroup.canonical} ━━━\n` +
+            `Attribution: ${matchedGroup.nation}\n` +
+            `Also known as: ${matchedGroup.aliases.join(', ')}\n\n` +
+            `OVERVIEW:\n${matchedGroup.description}\n\n` +
+            `MITRE ATT&CK TTPs:\n${matchedGroup.ttps.split(', ').map(t => `  — ${t}`).join('\n')}\n\n` +
+            `PRIMARY TARGETS:\n${matchedGroup.targets}\n\n` +
+            `NOTABLE CAMPAIGNS:\n${matchedGroup.campaigns}\n\n` +
+            `Active alert TTPs: ${techniques.join(', ') || 'No active alerts'}\n` +
+            `TTP overlap analysis: TAA is cross-referencing this group's known techniques against current alert data.\n\n` +
+            `Attribution confidence: MEDIUM — attribution is based on open-source CTI. Nation-state groups frequently share tools, infrastructure, and TTPs. Definitive attribution requires classified intelligence.\n\n` +
+            `Related queries: "IOC correlation" · "${matchedGroup.aliases[0]} IOCs" · "campaign analysis" · "MITRE techniques"`;
+        }
+
+        // Generic APT response (numbered APTs or general threat actor queries)
         return `Advanced Persistent Threat (APT) Intelligence:\n\n` +
           `APTs are sophisticated, well-funded adversaries (often nation-state backed) that maintain long-term access to targets for espionage, sabotage, or financial gain. Unlike opportunistic attackers, APTs use custom tooling, patience, and operational security to avoid detection.\n\n` +
-          (aptMatch
-            ? `Queried: ${aptMatch[0].toUpperCase()}\n` +
-              `TAA has cross-referenced this group's known TTPs against your active alerts to identify potential overlap. Attribution in cybersecurity is inherently uncertain \u2014 multiple groups share tools and infrastructure.\n\n`
+          (aptNumMatch
+            ? `Queried: ${aptNumMatch[0].toUpperCase()}\n` +
+              `TAA has cross-referenced this group's known TTPs against your active alerts to identify potential overlap. Attribution in cybersecurity is inherently uncertain — multiple groups share tools and infrastructure.\n\n`
             : '') +
           `Active alert TTPs: ${techniques.join(', ') || 'No active alerts'}\n\n` +
-          `Known threat groups with similar TTPs:\n` +
-          `  \u2014 APT-29 (Cozy Bear / Russia): Specializes in espionage. Known for T1566 (spearphishing), T1059 (PowerShell), T1071 (web protocols for C2). Targets government and diplomatic entities. Used supply chain attacks (SolarWinds).\n` +
-          `  \u2014 APT-41 (Double Dragon / China): Dual espionage + financial crime. Uses T1190 (exploit public apps), T1053 (scheduled tasks), T1055 (process injection). Targets healthcare, telecoms, and tech sectors.\n` +
-          `  \u2014 Lazarus Group (North Korea): Financial motivation + destructive capability. Known for T1486 (ransomware), T1490 (inhibit recovery), T1027 (obfuscation). Responsible for WannaCry, SWIFT bank heists.\n` +
-          `  \u2014 Sandworm (Russia/GRU): Critical infrastructure focus. NotPetya, Industroyer/CrashOverride. Targets energy, government.\n\n` +
-          `Attribution confidence: LOW \u2014 multiple actors share similar techniques. True attribution requires corroborating IOCs (infrastructure, malware families, victimology) with classified intelligence. Avoid premature attribution in incident reports.\n\n` +
-          `Intel sources: MITRE ATT&CK, CISA advisories, open-source CTI feeds, vendor threat reports, information sharing organizations (ISACs).\n\n` +
-          `Related topics: "IOC correlation" \u00B7 "campaign analysis" \u00B7 "dark web" \u00B7 "zero-day"`;
+          `Known threat groups in TAA database:\n\n` +
+          `🇮🇷 IRAN:\n` +
+          `  — APT-33 / Elfin: Aviation, energy, petrochemical targeting. Shamoon wiper links. T1566, T1486.\n` +
+          `  — APT-35 / Charming Kitten: Journalist/dissident surveillance, credential theft. T1566, T1598, T1114.\n` +
+          `  — MuddyWater: Government/telecom espionage across Middle East. T1059, T1218, T1047.\n\n` +
+          `🇷🇺 RUSSIA:\n` +
+          `  — APT-29 / Cozy Bear (SVR): Espionage, supply chain (SolarWinds). T1566, T1195, T1071.\n` +
+          `  — APT-28 / Fancy Bear (GRU): Military/political targeting, influence ops. T1566, T1190.\n` +
+          `  — Sandworm (GRU): Critical infrastructure destruction (NotPetya, Ukraine grid). T1485, T1489.\n` +
+          `  — Turla / Snake (FSB): Long-term espionage, satellite C2. T1071, T1584.\n\n` +
+          `🇨🇳 CHINA:\n` +
+          `  — APT-41 / Double Dragon: Dual espionage + financial crime. T1190, T1053, T1055.\n` +
+          `  — Hafnium: Exchange Server exploitation. T1190, T1003.\n\n` +
+          `🇰🇵 NORTH KOREA:\n` +
+          `  — Lazarus Group: Financial theft + destruction (WannaCry, SWIFT heists). T1486, T1490.\n` +
+          `  — Kimsuky: Nuclear/policy intelligence collection. T1566, T1114.\n\n` +
+          `Attribution confidence: LOW — multiple actors share similar techniques. True attribution requires corroborating IOCs (infrastructure, malware families, victimology) with classified intelligence.\n\n` +
+          `Ask about a specific group by name (e.g., "Charming Kitten", "APT-33", "Elfin") for detailed intelligence reports.\n\n` +
+          `Intel sources: MITRE ATT&CK, CISA advisories, open-source CTI feeds, vendor threat reports, ISACs.\n\n` +
+          `Related topics: "IOC correlation" · "campaign analysis" · "dark web" · "zero-day"`;
       }
 
       // IOC / indicator of compromise / threat intel feed
@@ -570,13 +711,14 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
               `  Total IOCs reported: ${threats.length}\n` +
               `  Active malware families: ${malwareFamilies}\n` +
               `  Recent IOCs:\n${topIOCs}\n` +
-              `\n  \u2192 Paste any IP, hash, domain, or URL in this chat to look it up live against ThreatFox, URLhaus, and MalwareBazaar.\n`;
+              `\n  \u2192 Paste any IP, hash, domain, or URL in this chat to look it up live against ThreatFox, URLhaus, MalwareBazaar, and VirusTotal.\n`;
           }
         } catch { /* fallback to static */ }
 
         return `IOC & Threat Intelligence:\n\n` +
           `Indicators of Compromise (IOCs) are forensic artifacts \u2014 IP addresses, file hashes, domains, URLs \u2014 that indicate a system has been breached or is communicating with attacker infrastructure. TAA continuously correlates IOCs from multiple feeds against your environment.\n\n` +
           `Active IOC feeds:\n` +
+          `  \u2014 VirusTotal: Multi-engine malware scanning (70+ AV engines), IP/domain/hash/URL reputation\n` +
           `  \u2014 ThreatFox (abuse.ch): Community-sourced IOCs updated in real-time\n` +
           `  \u2014 URLhaus (abuse.ch): Malicious URL tracking and takedown\n` +
           `  \u2014 MalwareBazaar (abuse.ch): Malware sample repository with YARA matches\n` +
@@ -1313,7 +1455,7 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
       }
 
       return `IOC Scanner online.\n` +
-        `\u2022 Connected to: ThreatFox, URLhaus, MalwareBazaar (abuse.ch)\n` +
+        `\u2022 Connected to: ThreatFox, URLhaus, MalwareBazaar (abuse.ch), VirusTotal\n` +
         `\u2022 Provide an IP, domain, URL, or hash for live reputation lookup\n` +
         `\u2022 Checking known malware families, C2 servers, and phishing domains`;
     }
@@ -1517,13 +1659,13 @@ function generateGeneralCyberResponse(message: string): string | null {
       `  \u2014 RVA: validates mitigations against CVE data`;
   }
 
-  // XSS / SQLi / CSRF / SSRF / injection attacks
-  if (/xss|sqli|sql\s*inject|csrf|ssrf|rce|lfi|rfi/i.test(message)) {
-    const attackType = /xss/i.test(message) ? 'Cross-Site Scripting (XSS)' :
+  // XSS / SQLi / CSRF / SSRF / injection attacks (word boundaries to prevent substring collisions like "eLFIn")
+  if (/\bxss\b|\bsqli\b|sql\s*inject|\bcsrf\b|\bssrf\b|\brce\b|\blfi\b|\brfi\b|file\s*inclusion/i.test(message)) {
+    const attackType = /\bxss\b/i.test(message) ? 'Cross-Site Scripting (XSS)' :
       /sql/i.test(message) ? 'SQL Injection' :
-      /csrf/i.test(message) ? 'Cross-Site Request Forgery (CSRF)' :
-      /ssrf/i.test(message) ? 'Server-Side Request Forgery (SSRF)' :
-      /rce/i.test(message) ? 'Remote Code Execution (RCE)' : 'File Inclusion (LFI/RFI)';
+      /\bcsrf\b/i.test(message) ? 'Cross-Site Request Forgery (CSRF)' :
+      /\bssrf\b/i.test(message) ? 'Server-Side Request Forgery (SSRF)' :
+      /\brce\b/i.test(message) ? 'Remote Code Execution (RCE)' : 'File Inclusion (LFI/RFI)';
     return `SOC Knowledge Base \u2014 ${attackType}:\n` +
       `\u2022 Attack description: ${attackType}\n` +
       `\u2022 Detection:\n` +
@@ -2257,7 +2399,7 @@ export class SocChatPanel {
     if (iocType !== 'unknown') {
       const iocSender: GatraAgentDef = {
         id: 'ioc-scan', name: 'IOC', fullName: 'IOC Scanner',
-        role: 'Live IOC lookup against ThreatFox, URLhaus, MalwareBazaar',
+        role: 'Live IOC lookup against ThreatFox, URLhaus, MalwareBazaar, VirusTotal',
         color: '#e040fb', emoji: '\uD83D\uDD0E',
         triggerPatterns: [],
       };
