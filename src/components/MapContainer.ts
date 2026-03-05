@@ -26,6 +26,7 @@ import type {
   CyberThreat,
   CableHealthRecord,
   GatraAlert,
+  GulfFlight,
 } from '@/types';
 import type { AirportDelayAlert } from '@/services/aviation';
 import type { DisplacementFlow } from '@/services/displacement';
@@ -265,6 +266,12 @@ export class MapContainer {
       this.deckGLMap?.setMilitaryFlights(flights, clusters);
     } else {
       this.svgMap?.setMilitaryFlights(flights, clusters);
+    }
+  }
+
+  public setGulfFlights(flights: GulfFlight[]): void {
+    if (this.useDeckGL) {
+      this.deckGLMap?.setGulfFlights(flights);
     }
   }
 

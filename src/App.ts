@@ -14,7 +14,7 @@ import {
   LAYER_TO_SOURCE,
 } from '@/config';
 import { BETA_MODE } from '@/config/beta';
-import { fetchCategoryFeeds, getFeedFailures, fetchMultipleStocks, fetchCrypto, fetchPredictions, fetchEarthquakes, fetchWeatherAlerts, fetchFredData, fetchInternetOutages, isOutagesConfigured, fetchAisSignals, initAisStream, getAisStatus, disconnectAisStream, isAisConfigured, fetchCableActivity, fetchCableHealth, fetchProtestEvents, getProtestStatus, fetchFlightDelays, fetchMilitaryFlights, fetchMilitaryVessels, initMilitaryVesselStream, isMilitaryVesselTrackingConfigured, fetchUSNIFleetReport, initDB, updateBaseline, calculateDeviation, addToSignalHistory, saveSnapshot, cleanOldSnapshots, analysisWorker, fetchPizzIntStatus, fetchGdeltTensions, fetchNaturalEvents, fetchRecentAwards, fetchOilAnalytics, fetchCyberThreats, drainTrendingSignals } from '@/services';
+import { fetchCategoryFeeds, getFeedFailures, fetchMultipleStocks, fetchCrypto, fetchPredictions, fetchEarthquakes, fetchWeatherAlerts, fetchFredData, fetchInternetOutages, isOutagesConfigured, fetchAisSignals, initAisStream, getAisStatus, disconnectAisStream, isAisConfigured, fetchCableActivity, fetchCableHealth, fetchProtestEvents, getProtestStatus, fetchFlightDelays, fetchMilitaryFlights, fetchAllGulfFlights, fetchMilitaryVessels, initMilitaryVesselStream, isMilitaryVesselTrackingConfigured, fetchUSNIFleetReport, initDB, updateBaseline, calculateDeviation, addToSignalHistory, saveSnapshot, cleanOldSnapshots, analysisWorker, fetchPizzIntStatus, fetchGdeltTensions, fetchNaturalEvents, fetchRecentAwards, fetchOilAnalytics, fetchCyberThreats, drainTrendingSignals } from '@/services';
 import { fetchCountryMarkets } from '@/services/prediction';
 import { mlWorker } from '@/services/ml-worker';
 import { clusterNewsHybrid } from '@/services/clustering';
@@ -4022,9 +4022,10 @@ export class App {
         if (isMilitaryVesselTrackingConfigured()) {
           initMilitaryVesselStream();
         }
-        const [flightData, vesselData] = await Promise.all([
+        const [flightData, vesselData, gulfFlights] = await Promise.all([
           fetchMilitaryFlights(),
           fetchMilitaryVessels(),
+          fetchAllGulfFlights(),
         ]);
         this.intelligenceCache.military = {
           flights: flightData.flights,
@@ -4049,6 +4050,10 @@ export class App {
         ]).then(anomalies => {
           if (anomalies.length > 0) signalAggregator.ingestTemporalAnomalies(anomalies);
         }).catch(() => { });
+        // Gulf air traffic (all flights — military + commercial)
+        if (gulfFlights.length > 0) {
+          this.map?.setGulfFlights(gulfFlights);
+        }
         // Update map only if layer is visible
         if (this.mapLayers.military) {
           this.map?.setMilitaryFlights(flightData.flights, flightData.clusters);
@@ -4469,9 +4474,10 @@ export class App {
       if (isMilitaryVesselTrackingConfigured()) {
         initMilitaryVesselStream();
       }
-      const [flightData, vesselData] = await Promise.all([
+      const [flightData, vesselData, gulfFlights] = await Promise.all([
         fetchMilitaryFlights(),
         fetchMilitaryVessels(),
+        fetchAllGulfFlights(),
       ]);
       this.intelligenceCache.military = {
         flights: flightData.flights,
@@ -4484,6 +4490,10 @@ export class App {
       }).catch(() => {});
       this.map?.setMilitaryFlights(flightData.flights, flightData.clusters);
       this.map?.setMilitaryVessels(vesselData.vessels, vesselData.clusters);
+      // Gulf air traffic (all flights — military + commercial)
+      if (gulfFlights.length > 0) {
+        this.map?.setGulfFlights(gulfFlights);
+      }
       ingestFlights(flightData.flights);
       ingestVessels(vesselData.vessels);
       ingestMilitaryForCII(flightData.flights, vesselData.vessels);

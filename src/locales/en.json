@@ -705,6 +705,7 @@
         "militaryActivity": "Military Activity",
         "shipTraffic": "Ship Traffic",
         "flightDelays": "Flight Delays",
+        "gulfAirTraffic": "Gulf Air Traffic",
         "protests": "Protests",
         "ucdpEvents": "UCDP Events",
         "displacementFlows": "Displacement Flows",

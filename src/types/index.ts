@@ -736,6 +736,22 @@ export interface MilitaryFlightCluster {
   activityType?: 'exercise' | 'patrol' | 'transport' | 'unknown';
 }
 
+// Gulf Air Traffic — all aircraft (military + commercial)
+export interface GulfFlight {
+  id: string;
+  callsign: string;
+  hexCode: string;
+  lat: number;
+  lon: number;
+  altitude: number;       // feet
+  heading: number;        // degrees
+  speed: number;          // knots
+  originCountry: string;
+  onGround: boolean;
+  isMilitary: boolean;
+  lastSeen: Date;
+}
+
 // Military/Special Vessel Tracking Types
 export type MilitaryVesselType =
   | 'carrier'           // Aircraft carrier

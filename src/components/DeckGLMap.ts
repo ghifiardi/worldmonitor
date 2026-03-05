@@ -34,6 +34,7 @@ import type {
   CyberThreat,
   CableHealthRecord,
   GatraAlert,
+  GulfFlight,
 } from '@/types';
 import type { AirportDelayAlert } from '@/services/aviation';
 import type { DisplacementFlow } from '@/services/displacement';
@@ -186,6 +187,7 @@ function getOverlayColors() {
     earthquake: [255, 100, 50, 200] as [number, number, number, number],
     vesselMilitary: [255, 100, 100, 220] as [number, number, number, number],
     flightMilitary: [255, 50, 50, 220] as [number, number, number, number],
+    flightCommercial: [0, 200, 255, 160] as [number, number, number, number],
     protest: [255, 150, 0, 200] as [number, number, number, number],
     outage: [255, 50, 50, 180] as [number, number, number, number],
     weather: [100, 150, 255, 180] as [number, number, number, number],
@@ -264,6 +266,7 @@ export class DeckGLMap {
   private firmsFireData: Array<{ lat: number; lon: number; brightness: number; frp: number; confidence: number; region: string; acq_date: string; daynight: string }> = [];
   private techEvents: TechEventMarker[] = [];
   private flightDelays: AirportDelayAlert[] = [];
+  private gulfFlights: GulfFlight[] = [];
   private news: NewsItem[] = [];
   private newsLocations: Array<{ lat: number; lon: number; title: string; threatLevel: string; timestamp?: Date }> = [];
   private newsLocationFirstSeen = new Map<string, number>();
@@ -1057,6 +1060,14 @@ export class DeckGLMap {
       layers.push(this.createFlightDelaysLayer(filteredFlightDelays));
     }
 
+    // Gulf air traffic layer (all flights — military + commercial)
+    if (mapLayers.flights && this.gulfFlights.length > 0) {
+      const airborne = this.gulfFlights.filter(f => !f.onGround);
+      if (airborne.length > 0) {
+        layers.push(this.createGulfFlightsLayer(airborne));
+      }
+    }
+
     // Protests layer (Supercluster-based deck.gl layers)
     if (mapLayers.protests && this.protests.length > 0) {
       layers.push(...this.createProtestClusterLayers());
@@ -1729,6 +1740,19 @@ export class DeckGLMap {
       },
       radiusMinPixels: 8,
       radiusMaxPixels: 25,
+      pickable: true,
+    });
+  }
+
+  private createGulfFlightsLayer(flights: GulfFlight[]): ScatterplotLayer {
+    return new ScatterplotLayer({
+      id: 'gulf-flights-layer',
+      data: flights,
+      getPosition: (d) => [d.lon, d.lat],
+      getRadius: (d) => d.isMilitary ? 8000 : 4000,
+      getFillColor: (d) => d.isMilitary ? COLORS.flightMilitary : COLORS.flightCommercial,
+      radiusMinPixels: 2,
+      radiusMaxPixels: 8,
       pickable: true,
     });
   }
@@ -2448,6 +2472,10 @@ export class DeckGLMap {
       }
       case 'flight-delays-layer':
         return { html: `<div class="deckgl-tooltip"><strong>${text(obj.airport)}</strong><br/>${text(obj.severity)}: ${text(obj.reason)}</div>` };
+      case 'gulf-flights-layer': {
+        const typeTag = obj.isMilitary ? '🔴 MIL' : '✈';
+        return { html: `<div class="deckgl-tooltip"><strong>${typeTag} ${text(obj.callsign)}</strong><br/>${text(obj.originCountry)}<br/>ALT ${obj.altitude?.toLocaleString() || 0}ft · ${obj.speed || 0}kts · HDG ${obj.heading || 0}°</div>` };
+      }
       case 'apt-groups-layer':
         return { html: `<div class="deckgl-tooltip"><strong>${text(obj.name)}</strong><br/>${text(obj.aka)}<br/>${t('popups.sponsor')}: ${text(obj.sponsor)}</div>` };
       case 'minerals-layer':
@@ -2650,6 +2678,7 @@ export class DeckGLMap {
       'spaceports-layer': 'spaceport',
       'ports-layer': 'port',
       'flight-delays-layer': 'flight',
+      'gulf-flights-layer': 'flight',
       'startup-hubs-layer': 'startupHub',
       'tech-hqs-layer': 'techHQ',
       'accelerators-layer': 'accelerator',
@@ -2813,6 +2842,7 @@ export class DeckGLMap {
           { key: 'gatraAlerts', label: t('components.deckgl.layers.gatraAlerts'), icon: '&#128737;' },
           { key: 'cyberThreats', label: t('components.deckgl.layers.cyberThreats'), icon: '&#128274;' },
           { key: 'conflicts', label: t('components.deckgl.layers.conflictZones'), icon: '&#9876;' },
+          { key: 'flights', label: t('components.deckgl.layers.gulfAirTraffic'), icon: '&#9992;' },
           { key: 'cables', label: t('components.deckgl.layers.underseaCables'), icon: '&#128268;' },
           { key: 'datacenters', label: t('components.deckgl.layers.aiDataCenters'), icon: '&#128421;' },
           { key: 'military', label: t('components.deckgl.layers.militaryActivity'), icon: '&#9992;' },
@@ -3350,6 +3380,11 @@ export class DeckGLMap {
 
   public setFlightDelays(delays: AirportDelayAlert[]): void {
     this.flightDelays = delays;
+    this.render();
+  }
+
+  public setGulfFlights(flights: GulfFlight[]): void {
+    this.gulfFlights = flights;
     this.render();
   }
 

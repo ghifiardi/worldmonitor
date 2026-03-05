@@ -1,4 +1,4 @@
-import type { MilitaryFlight, MilitaryFlightCluster, MilitaryAircraftType, MilitaryOperator } from '@/types';
+import type { MilitaryFlight, MilitaryFlightCluster, MilitaryAircraftType, MilitaryOperator, GulfFlight } from '@/types';
 import { createCircuitBreaker } from '@/utils';
 import {
   identifyByCallsign,
@@ -14,11 +14,11 @@ import {
 } from './wingbits';
 import { isFeatureAvailable } from './runtime-config';
 
-// OpenSky Network API - use Railway relay (Vercel is blocked by OpenSky)
+// OpenSky Network API - use Railway relay or fall back to our Vercel edge proxy
 const wsRelayUrl = import.meta.env.VITE_WS_RELAY_URL || '';
 const OPENSKY_BASE_URL = wsRelayUrl
   ? wsRelayUrl.replace('wss://', 'https://').replace('ws://', 'http://').replace(/\/$/, '') + '/opensky'
-  : '';
+  : '/api/flights'; // Vercel edge proxy fallback
 
 // Cache configuration
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes - match refresh interval
@@ -558,4 +558,102 @@ export function getFlightsByOperator(operator: MilitaryOperator): MilitaryFlight
 export function getInterestingFlights(): MilitaryFlight[] {
   if (!flightCache) return [];
   return flightCache.data.filter((f) => f.isInteresting);
+}
+
+// ── Gulf Air Traffic (ALL flights — military + commercial) ───────────
+
+// Separate cache for all-flights data
+let gulfFlightCache: { data: GulfFlight[]; timestamp: number } | null = null;
+const GULF_CACHE_TTL = 30_000; // 30 seconds
+
+const gulfBreaker = createCircuitBreaker<GulfFlight[]>({
+  name: 'Gulf Air Traffic',
+  maxFailures: 3,
+  cooldownMs: 2 * 60 * 1000,
+  cacheTtlMs: 60 * 1000,
+});
+
+/**
+ * Parse ALL flights from OpenSky response (not just military)
+ */
+function parseAllFlightsFromOpenSky(data: OpenSkyResponse): GulfFlight[] {
+  if (!data.states) return [];
+
+  const flights: GulfFlight[] = [];
+  const now = new Date();
+
+  for (const state of data.states) {
+    const lat = state[6];
+    const lon = state[5];
+    if (lat === null || lon === null) continue;
+
+    const icao24 = state[0];
+    const callsign = (state[1] || '').trim();
+    const baroAlt = state[7];
+    const velocity = state[9];
+    const track = state[10];
+    const military = isMilitaryFlight(state);
+
+    flights.push({
+      id: `os-${icao24}`,
+      callsign: callsign || icao24.toUpperCase(),
+      hexCode: icao24.toUpperCase(),
+      lat,
+      lon,
+      altitude: baroAlt ? Math.round(baroAlt * 3.28084) : 0,
+      heading: track || 0,
+      speed: velocity ? Math.round(velocity * 1.94384) : 0,
+      originCountry: state[2] || 'Unknown',
+      onGround: state[8],
+      isMilitary: military,
+      lastSeen: now,
+    });
+  }
+
+  return flights;
+}
+
+/**
+ * Fetch ALL flights for the CENTCOM hotspot region (Gulf + MENA).
+ * Returns both military and commercial aircraft.
+ */
+export async function fetchAllGulfFlights(): Promise<GulfFlight[]> {
+  if (!OPENSKY_BASE_URL) return [];
+
+  return gulfBreaker.execute(async () => {
+    // Check cache
+    if (gulfFlightCache && Date.now() - gulfFlightCache.timestamp < GULF_CACHE_TTL) {
+      return gulfFlightCache.data;
+    }
+
+    // Use the CENTCOM hotspot bounding box (lat 28±15, lon 42±15)
+    const centcom = MILITARY_HOTSPOTS.find(h => h.name === 'CENTCOM');
+    if (!centcom) return [];
+
+    const lamin = centcom.lat - centcom.radius;
+    const lamax = centcom.lat + centcom.radius;
+    const lomin = centcom.lon - centcom.radius;
+    const lomax = centcom.lon + centcom.radius;
+
+    const response = await fetch(
+      `${OPENSKY_BASE_URL}?lamin=${lamin}&lamax=${lamax}&lomin=${lomin}&lomax=${lomax}`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+
+    if (!response.ok) {
+      if (response.status === 429) {
+        console.warn('[Gulf Flights] Rate limited');
+      }
+      throw new Error(`OpenSky returned ${response.status}`);
+    }
+
+    const data: OpenSkyResponse = await response.json();
+    const flights = parseAllFlightsFromOpenSky(data);
+
+    // Update cache
+    gulfFlightCache = { data: flights, timestamp: Date.now() };
+
+    console.log(`[Gulf Flights] ${flights.length} aircraft (${flights.filter(f => f.isMilitary).length} military, ${flights.filter(f => !f.isMilitary).length} commercial)`);
+    return flights;
+  }, []);
 }
