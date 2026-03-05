@@ -561,10 +561,33 @@ export function getInterestingFlights(): MilitaryFlight[] {
 }
 
 // ── Gulf Air Traffic (ALL flights — military + commercial) ───────────
+// Uses airplanes.live (free ADS-B Exchange data) via /api/flights proxy.
+// The proxy aggregates multiple point queries covering the Gulf/MENA region.
 
-// Separate cache for all-flights data
+interface AirplanesLiveAc {
+  hex: string;
+  flight?: string;
+  lat?: number;
+  lon?: number;
+  alt_baro?: number | 'ground';
+  gs?: number;
+  track?: number;
+  r?: string;          // registration
+  t?: string;          // aircraft type ICAO
+  dbFlags?: number;    // bit 0 = military
+  alt_geom?: number;
+  squawk?: string;
+  category?: string;
+}
+
+interface AirplanesLiveResponse {
+  ac: AirplanesLiveAc[];
+  now: number;
+  total: number;
+}
+
 let gulfFlightCache: { data: GulfFlight[]; timestamp: number } | null = null;
-const GULF_CACHE_TTL = 60_000; // 60 seconds (OpenSky is rate-limited)
+const GULF_CACHE_TTL = 45_000; // 45 seconds (matches proxy cache)
 
 const gulfBreaker = createCircuitBreaker<GulfFlight[]>({
   name: 'Gulf Air Traffic',
@@ -574,38 +597,35 @@ const gulfBreaker = createCircuitBreaker<GulfFlight[]>({
 });
 
 /**
- * Parse ALL flights from OpenSky response (not just military)
+ * Parse aircraft from airplanes.live response into GulfFlight[]
  */
-function parseAllFlightsFromOpenSky(data: OpenSkyResponse): GulfFlight[] {
-  if (!data.states) return [];
+function parseAirplanesLiveData(data: AirplanesLiveResponse): GulfFlight[] {
+  if (!data.ac) return [];
 
   const flights: GulfFlight[] = [];
   const now = new Date();
 
-  for (const state of data.states) {
-    const lat = state[6];
-    const lon = state[5];
-    if (lat === null || lon === null) continue;
+  for (const ac of data.ac) {
+    if (ac.lat == null || ac.lon == null) continue;
 
-    const icao24 = state[0];
-    const callsign = (state[1] || '').trim();
-    const baroAlt = state[7];
-    const velocity = state[9];
-    const track = state[10];
-    const military = isMilitaryFlight(state);
+    const hexCode = (ac.hex || '').toUpperCase();
+    const callsign = (ac.flight || '').trim();
+    const altBaro = typeof ac.alt_baro === 'number' ? ac.alt_baro : 0;
+    const onGround = ac.alt_baro === 'ground';
+    const isMilitary = ((ac.dbFlags || 0) & 1) === 1;
 
     flights.push({
-      id: `os-${icao24}`,
-      callsign: callsign || icao24.toUpperCase(),
-      hexCode: icao24.toUpperCase(),
-      lat,
-      lon,
-      altitude: baroAlt ? Math.round(baroAlt * 3.28084) : 0,
-      heading: track || 0,
-      speed: velocity ? Math.round(velocity * 1.94384) : 0,
-      originCountry: state[2] || 'Unknown',
-      onGround: state[8],
-      isMilitary: military,
+      id: `al-${hexCode}`,
+      callsign: callsign || hexCode,
+      hexCode,
+      lat: ac.lat,
+      lon: ac.lon,
+      altitude: altBaro,
+      heading: ac.track || 0,
+      speed: ac.gs ? Math.round(ac.gs) : 0,
+      originCountry: ac.r || ac.t || 'Unknown',
+      onGround,
+      isMilitary,
       lastSeen: now,
     });
   }
@@ -614,64 +634,26 @@ function parseAllFlightsFromOpenSky(data: OpenSkyResponse): GulfFlight[] {
 }
 
 /**
- * Gulf / Middle East bounding boxes for OpenSky queries.
- * Split into smaller regions for faster, more reliable responses.
- * OpenSky is slow on large bounding boxes and has sparse ADS-B coverage in the Gulf.
- */
-const GULF_BBOXES = [
-  // Persian Gulf core: UAE, Qatar, Bahrain, Kuwait, eastern Saudi
-  { lamin: 20, lamax: 30, lomin: 47, lomax: 57 },
-  // Western Gulf: Saudi interior, Iraq, Jordan
-  { lamin: 20, lamax: 35, lomin: 35, lomax: 47 },
-  // Red Sea / Yemen / Oman
-  { lamin: 12, lamax: 20, lomin: 40, lomax: 57 },
-  // Turkey / Syria / Iran north
-  { lamin: 35, lamax: 42, lomin: 35, lomax: 55 },
-];
-
-/**
- * Fetch ALL flights for the Gulf + MENA region.
- * Returns both military and commercial aircraft.
- * Queries multiple smaller bounding boxes in parallel for reliability.
+ * Fetch ALL flights for the Gulf + MENA region from /api/flights proxy.
+ * The proxy queries airplanes.live across multiple coverage points and deduplicates.
  */
 export async function fetchAllGulfFlights(): Promise<GulfFlight[]> {
-  if (!OPENSKY_BASE_URL) return [];
-
   return gulfBreaker.execute(async () => {
     // Check cache
     if (gulfFlightCache && Date.now() - gulfFlightCache.timestamp < GULF_CACHE_TTL) {
       return gulfFlightCache.data;
     }
 
-    // Fetch all bounding boxes in parallel
-    const results = await Promise.allSettled(
-      GULF_BBOXES.map(async (bbox) => {
-        const response = await fetch(
-          `${OPENSKY_BASE_URL}?lamin=${bbox.lamin}&lamax=${bbox.lamax}&lomin=${bbox.lomin}&lomax=${bbox.lomax}`,
-          { headers: { 'Accept': 'application/json' } }
-        );
-        if (!response.ok) {
-          if (response.status === 429) console.warn('[Gulf Flights] Rate limited');
-          throw new Error(`OpenSky returned ${response.status}`);
-        }
-        const data: OpenSkyResponse = await response.json();
-        return parseAllFlightsFromOpenSky(data);
-      })
-    );
+    const response = await fetch('/api/flights', {
+      headers: { 'Accept': 'application/json' },
+    });
 
-    // Merge results, deduplicate by icao24 hex code
-    const seen = new Set<string>();
-    const flights: GulfFlight[] = [];
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        for (const f of result.value) {
-          if (!seen.has(f.hexCode)) {
-            seen.add(f.hexCode);
-            flights.push(f);
-          }
-        }
-      }
+    if (!response.ok) {
+      throw new Error(`Flights proxy returned ${response.status}`);
     }
+
+    const data: AirplanesLiveResponse = await response.json();
+    const flights = parseAirplanesLiveData(data);
 
     // Update cache
     gulfFlightCache = { data: flights, timestamp: Date.now() };

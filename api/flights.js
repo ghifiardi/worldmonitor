@@ -1,137 +1,129 @@
 /**
- * OpenSky Network Proxy — Vercel Serverless Function (Node.js)
+ * Gulf Air Traffic Proxy — Vercel Edge Function
  *
- * Proxies live aircraft state vectors from OpenSky for the Gulf/CENTCOM region.
- * Uses native Node.js https module for maximum compatibility.
+ * Proxies live aircraft positions from airplanes.live (free ADS-B data).
+ * Queries multiple points to cover the Gulf/MENA region and deduplicates.
  *
- * GET /api/flights?lamin=13&lamax=43&lomin=27&lomax=57
+ * GET /api/flights
+ * Returns: { ac: [...], now: timestamp, total: count }
  */
 
-import https from 'https';
+import { getCorsHeaders } from './_cors.js';
 
-const OPENSKY_HOST = 'opensky-network.org';
-const OPENSKY_PATH = '/api/states/all';
-const FETCH_TIMEOUT = 25000;
+export const config = { runtime: 'edge' };
+
+const API_BASE = 'https://api.airplanes.live/v2';
+const FETCH_TIMEOUT = 12000;
+
+// Gulf/MENA coverage points (lat, lon, radius_nm)
+// Each covers ~250nm radius. Combined covers: Persian Gulf, Red Sea, Levant, Turkey, Iran
+const COVERAGE_POINTS = [
+  { lat: 26, lon: 50, r: 250 },   // Persian Gulf core (UAE, Qatar, Bahrain, Kuwait)
+  { lat: 25, lon: 44, r: 250 },   // Saudi Arabia + western Gulf
+  { lat: 33, lon: 44, r: 250 },   // Iraq + Levant (Syria, Jordan, Lebanon)
+  { lat: 38, lon: 42, r: 250 },   // Turkey + northern Iraq
+  { lat: 32, lon: 53, r: 250 },   // Iran
+  { lat: 15, lon: 45, r: 200 },   // Yemen + Red Sea south
+];
 
 // In-memory cache
-let cache = { data: null, timestamp: 0, key: '' };
-const CACHE_TTL = 30_000;
+let cache = { data: null, timestamp: 0 };
+const CACHE_TTL = 45_000; // 45 seconds
 
-function fetchOpenSky(params) {
-  return new Promise((resolve, reject) => {
-    const qs = new URLSearchParams(params).toString();
-    const options = {
-      hostname: OPENSKY_HOST,
-      path: `${OPENSKY_PATH}?${qs}`,
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'WorldMonitor/2.5',
-      },
-      timeout: FETCH_TIMEOUT,
-    };
+async function fetchWithTimeout(url, timeoutMs = FETCH_TIMEOUT) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' },
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
-    // Add auth if configured
-    const clientId = process.env.OPENSKY_CLIENT_ID;
-    const clientSecret = process.env.OPENSKY_CLIENT_SECRET;
-    if (clientId && clientSecret) {
-      options.headers['Authorization'] = 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+async function fetchAllGulfFlights() {
+  // Fetch all coverage points in parallel
+  const results = await Promise.allSettled(
+    COVERAGE_POINTS.map(async (pt) => {
+      const resp = await fetchWithTimeout(`${API_BASE}/point/${pt.lat}/${pt.lon}/${pt.r}`);
+      if (!resp.ok) throw new Error(`API ${resp.status}`);
+      const data = await resp.json();
+      return data.ac || [];
+    })
+  );
+
+  // Deduplicate by hex (ICAO24 address)
+  const seen = new Set();
+  const aircraft = [];
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      for (const ac of result.value) {
+        if (ac.hex && !seen.has(ac.hex)) {
+          seen.add(ac.hex);
+          aircraft.push(ac);
+        }
+      }
     }
-
-    const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => {
-        resolve({ status: res.statusCode, body });
-      });
-    });
-
-    req.on('error', (err) => reject(err));
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('OpenSky timeout'));
-    });
-
-    req.end();
-  });
-}
-
-function getCorsHeaders(origin) {
-  return {
-    'Access-Control-Allow-Origin': origin || '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Max-Age': '86400',
-  };
-}
-
-export default async function handler(req, res) {
-  const origin = req.headers.origin || req.headers.referer || '*';
-  const cors = getCorsHeaders(origin);
-  Object.entries(cors).forEach(([k, v]) => res.setHeader(k, v));
-
-  if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
-
-  const lamin = parseFloat(req.query.lamin);
-  const lamax = parseFloat(req.query.lamax);
-  const lomin = parseFloat(req.query.lomin);
-  const lomax = parseFloat(req.query.lomax);
-
-  if ([lamin, lamax, lomin, lomax].some(isNaN)) {
-    return res.status(400).json({ error: 'Missing or invalid bounding box params' });
   }
 
-  if (lamax - lamin > 60 || lomax - lomin > 60) {
-    return res.status(400).json({ error: 'Bounding box too large (max 60° span)' });
+  return aircraft;
+}
+
+export default async function handler(req) {
+  const corsHeaders = getCorsHeaders(req, 'GET, OPTIONS');
+
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+  if (req.method !== 'GET') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    });
   }
 
   // Check cache
-  const cacheKey = `${lamin},${lamax},${lomin},${lomax}`;
-  if (cache.data && cache.key === cacheKey && Date.now() - cache.timestamp < CACHE_TTL) {
-    res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=30, stale-while-revalidate=15');
-    res.setHeader('X-Cache', 'HIT');
-    res.setHeader('Content-Type', 'application/json');
-    return res.status(200).send(cache.data);
+  if (cache.data && Date.now() - cache.timestamp < CACHE_TTL) {
+    return new Response(cache.data, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=45, s-maxage=45, stale-while-revalidate=30',
+        'X-Cache': 'HIT',
+        ...corsHeaders,
+      },
+    });
   }
 
   try {
-    const result = await fetchOpenSky({
-      lamin: String(lamin),
-      lamax: String(lamax),
-      lomin: String(lomin),
-      lomax: String(lomax),
+    const aircraft = await fetchAllGulfFlights();
+    const payload = JSON.stringify({
+      ac: aircraft,
+      now: Date.now(),
+      total: aircraft.length,
     });
 
-    if (result.status === 429) {
-      res.setHeader('Retry-After', '60');
-      return res.status(429).json({ error: 'OpenSky rate limited', retryAfter: 60 });
-    }
-
-    if (result.status < 200 || result.status >= 300) {
-      console.error('[flights] OpenSky returned', result.status);
-      return res.status(502).json({ error: 'OpenSky upstream error', status: result.status });
-    }
-
     // Update cache
-    cache = { data: result.body, timestamp: Date.now(), key: cacheKey };
+    cache = { data: payload, timestamp: Date.now() };
 
-    res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=30, stale-while-revalidate=15');
-    res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Content-Type', 'application/json');
-    return res.status(200).send(result.body);
+    return new Response(payload, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=45, s-maxage=45, stale-while-revalidate=30',
+        'X-Cache': 'MISS',
+        ...corsHeaders,
+      },
+    });
   } catch (error) {
-    const isTimeout = error.message?.includes('timeout');
     console.error('[flights] Error:', error.message);
-    return res.status(isTimeout ? 504 : 502).json({
-      error: isTimeout ? 'OpenSky timeout' : 'Failed to fetch flight data',
+    return new Response(JSON.stringify({
+      error: 'Failed to fetch flight data',
       details: error.message,
+    }), {
+      status: 502,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
   }
 }
-
-export const config = {
-  maxDuration: 30,
-  // Deploy to European region — OpenSky (Swiss) blocks US cloud IPs
-  regions: ['fra1'],
-};
