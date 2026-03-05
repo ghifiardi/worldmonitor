@@ -564,7 +564,7 @@ export function getInterestingFlights(): MilitaryFlight[] {
 
 // Separate cache for all-flights data
 let gulfFlightCache: { data: GulfFlight[]; timestamp: number } | null = null;
-const GULF_CACHE_TTL = 30_000; // 30 seconds
+const GULF_CACHE_TTL = 60_000; // 60 seconds (OpenSky is rate-limited)
 
 const gulfBreaker = createCircuitBreaker<GulfFlight[]>({
   name: 'Gulf Air Traffic',
@@ -614,8 +614,25 @@ function parseAllFlightsFromOpenSky(data: OpenSkyResponse): GulfFlight[] {
 }
 
 /**
- * Fetch ALL flights for the CENTCOM hotspot region (Gulf + MENA).
+ * Gulf / Middle East bounding boxes for OpenSky queries.
+ * Split into smaller regions for faster, more reliable responses.
+ * OpenSky is slow on large bounding boxes and has sparse ADS-B coverage in the Gulf.
+ */
+const GULF_BBOXES = [
+  // Persian Gulf core: UAE, Qatar, Bahrain, Kuwait, eastern Saudi
+  { lamin: 20, lamax: 30, lomin: 47, lomax: 57 },
+  // Western Gulf: Saudi interior, Iraq, Jordan
+  { lamin: 20, lamax: 35, lomin: 35, lomax: 47 },
+  // Red Sea / Yemen / Oman
+  { lamin: 12, lamax: 20, lomin: 40, lomax: 57 },
+  // Turkey / Syria / Iran north
+  { lamin: 35, lamax: 42, lomin: 35, lomax: 55 },
+];
+
+/**
+ * Fetch ALL flights for the Gulf + MENA region.
  * Returns both military and commercial aircraft.
+ * Queries multiple smaller bounding boxes in parallel for reliability.
  */
 export async function fetchAllGulfFlights(): Promise<GulfFlight[]> {
   if (!OPENSKY_BASE_URL) return [];
@@ -626,29 +643,35 @@ export async function fetchAllGulfFlights(): Promise<GulfFlight[]> {
       return gulfFlightCache.data;
     }
 
-    // Use the CENTCOM hotspot bounding box (lat 28±15, lon 42±15)
-    const centcom = MILITARY_HOTSPOTS.find(h => h.name === 'CENTCOM');
-    if (!centcom) return [];
-
-    const lamin = centcom.lat - centcom.radius;
-    const lamax = centcom.lat + centcom.radius;
-    const lomin = centcom.lon - centcom.radius;
-    const lomax = centcom.lon + centcom.radius;
-
-    const response = await fetch(
-      `${OPENSKY_BASE_URL}?lamin=${lamin}&lamax=${lamax}&lomin=${lomin}&lomax=${lomax}`,
-      { headers: { 'Accept': 'application/json' } }
+    // Fetch all bounding boxes in parallel
+    const results = await Promise.allSettled(
+      GULF_BBOXES.map(async (bbox) => {
+        const response = await fetch(
+          `${OPENSKY_BASE_URL}?lamin=${bbox.lamin}&lamax=${bbox.lamax}&lomin=${bbox.lomin}&lomax=${bbox.lomax}`,
+          { headers: { 'Accept': 'application/json' } }
+        );
+        if (!response.ok) {
+          if (response.status === 429) console.warn('[Gulf Flights] Rate limited');
+          throw new Error(`OpenSky returned ${response.status}`);
+        }
+        const data: OpenSkyResponse = await response.json();
+        return parseAllFlightsFromOpenSky(data);
+      })
     );
 
-    if (!response.ok) {
-      if (response.status === 429) {
-        console.warn('[Gulf Flights] Rate limited');
+    // Merge results, deduplicate by icao24 hex code
+    const seen = new Set<string>();
+    const flights: GulfFlight[] = [];
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        for (const f of result.value) {
+          if (!seen.has(f.hexCode)) {
+            seen.add(f.hexCode);
+            flights.push(f);
+          }
+        }
       }
-      throw new Error(`OpenSky returned ${response.status}`);
     }
-
-    const data: OpenSkyResponse = await response.json();
-    const flights = parseAllFlightsFromOpenSky(data);
 
     // Update cache
     gulfFlightCache = { data: flights, timestamp: Date.now() };

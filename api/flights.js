@@ -13,7 +13,7 @@ import { getCorsHeaders } from './_cors.js';
 export const config = { runtime: 'edge' };
 
 const OPENSKY_API = 'https://opensky-network.org/api/states/all';
-const FETCH_TIMEOUT = 15000;
+const FETCH_TIMEOUT = 25000;
 
 // In-memory cache (edge instances are short-lived but cache helps within a region)
 let cache = { data: null, timestamp: 0, key: '' };
