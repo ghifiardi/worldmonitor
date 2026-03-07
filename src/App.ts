@@ -89,6 +89,7 @@ import { CVEFeedPanel } from '@/panels/cve-feed-panel';
 import { CiiScorePanel } from '@/panels/cii-score-panel';
 import { PredictionSignalsPanel } from '@/panels/prediction-signals-panel';
 import { A2aSecurityPanel } from '@/panels/a2a-security-panel';
+import { SocialThreatsPanel } from '@/panels/social-threats-panel';
 import { PersonalSecurityPosturePanel } from '@/panels/personal-security-posture-panel';
 import { SocChatPanel } from '@/panels/soc-chat-panel';
 import { refreshGatraData, ingestConflictCorrelations } from '@/gatra/connector';
@@ -2463,6 +2464,9 @@ export class App {
       const a2aSecurityPanel = new A2aSecurityPanel();
       this.panels['a2a-security'] = a2aSecurityPanel;
 
+      const socialThreatsPanel = new SocialThreatsPanel();
+      this.panels['social-threats'] = socialThreatsPanel;
+
       const pspPanel = new PersonalSecurityPosturePanel();
       this.panels['personal-security-posture'] = pspPanel;
 
@@ -3299,6 +3303,11 @@ export class App {
     // CVE Feed (cyber variant)
     if (SITE_VARIANT === 'cyber') {
       tasks.push({ name: 'cve-feed', task: runGuarded('cve-feed', () => this.loadCVEFeed()) });
+    }
+
+    // Social Threat Intel (cyber variant)
+    if (SITE_VARIANT === 'cyber') {
+      tasks.push({ name: 'social-threats', task: runGuarded('social-threats', () => this.loadSocialThreats()) });
     }
 
     // Ransomware Tracker (cyber variant)
@@ -4266,6 +4275,15 @@ export class App {
     }
   }
 
+  private async loadSocialThreats(): Promise<void> {
+    try {
+      const socialPanel = this.panels['social-threats'] as SocialThreatsPanel | undefined;
+      await socialPanel?.refresh();
+    } catch (error) {
+      console.error('[App] Social threats load failed:', error);
+    }
+  }
+
   private async loadRansomwareData(): Promise<void> {
     try {
       const ransomwarePanel = this.panels['ransomware-tracker'] as RansomwareTrackerPanel | undefined;
@@ -4877,6 +4895,9 @@ export class App {
 
       // CVE Feed (10 min refresh, cyber variant only)
       this.scheduleRefresh('cve-feed', () => this.loadCVEFeed(), 10 * 60 * 1000);
+
+      // Social Threat Intel (10 min refresh, cyber variant only)
+      this.scheduleRefresh('social-threats', () => this.loadSocialThreats(), 10 * 60 * 1000);
 
       // Ransomware Tracker (5 min refresh, cyber variant only)
       this.scheduleRefresh('ransomware-tracker', () => this.loadRansomwareData(), 5 * 60 * 1000);

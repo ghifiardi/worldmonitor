@@ -1438,6 +1438,24 @@ export interface CVEItem {
 }
 
 // ============================================
+// SOCIAL THREAT INTELLIGENCE TYPES
+// ============================================
+
+export type SocialPlatform = 'bluesky' | 'hackernews' | 'mastodon';
+
+export interface SocialThreatPost {
+  id: string;
+  platform: SocialPlatform;
+  author: string;
+  authorDisplayName: string;
+  content: string;
+  url: string;
+  postedAt: Date;
+  engagement: { likes: number; reposts: number; replies: number };
+  threatKeywords: string[];
+}
+
+// ============================================
 // RANSOMWARE TRACKER TYPES
 // ============================================
 
