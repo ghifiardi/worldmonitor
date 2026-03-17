@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https: http://localhost:5173 http://127.0.0.1:46123 ws: wss: blob: data:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://www.youtube.com https://static.cloudflareinsights.com https://us-assets.i.posthog.com; worker-src 'self' blob:; font-src 'self' data: https:; media-src 'self' data: blob: https:; frame-src 'self' http://127.0.0.1:46123 https://worldmonitor.app https://tech.worldmonitor.app https://www.youtube.com https://www.youtube-nocookie.com;" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https: http://localhost:5173 http://127.0.0.1:46123 ws: wss: blob: data:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://www.youtube.com https://static.cloudflareinsights.com https://us-assets.i.posthog.com; worker-src 'self' blob:; font-src 'self' data: https:; media-src 'self' data: blob: https:; frame-src 'self' http://127.0.0.1:46123 https://worldmonitor.app https://tech.worldmonitor.app https://www.youtube.com https://www.youtube-nocookie.com;" />
     <meta name="referrer" content="strict-origin-when-cross-origin" />
 
     <!-- Primary Meta Tags -->
@@ -92,7 +92,7 @@
 
 
     <!-- Theme: apply stored preference before first paint to prevent FOUC -->
-    <script>(function(){try{var t=localStorage.getItem('worldmonitor-theme');if(t==='light')document.documentElement.dataset.theme='light';var v=localStorage.getItem('worldmonitor-variant');if(v)document.documentElement.dataset.variant=v;}catch(e){}document.documentElement.classList.add('no-transition');})()</script>
+    <script>(function(){try{var t=localStorage.getItem('worldmonitor-theme');if(t==='light')document.documentElement.dataset.theme='light';}catch(e){}document.documentElement.classList.add('no-transition');})()</script>
 
     <!-- Critical CSS: inline skeleton visible before JS boots -->
     <style>
@@ -129,25 +129,7 @@
       [data-theme="light"] .skeleton-panel{background:#fff;border-color:#d4d4d4}
       [data-theme="light"] .skeleton-panel-header{border-bottom-color:#e8e8e8}
       [data-theme="light"] .skeleton-line{background:linear-gradient(90deg,rgba(0,0,0,.04) 25%,rgba(0,0,0,.08) 50%,rgba(0,0,0,.04) 75%);background-size:200% 100%;animation:skel-shimmer 1.5s infinite}
-
-      /* ---------- skeleton shell (cyber variant) ---------- */
-      [data-variant="cyber"] .skeleton-shell{background:#0b0e14;font-family:'DM Sans',system-ui,sans-serif}
-      [data-variant="cyber"] .skeleton-header{background:#080c12;border-bottom-color:rgba(56,189,248,0.12)}
-      [data-variant="cyber"] .skeleton-pill{background:#111620}
-      [data-variant="cyber"] .skeleton-dot{background:#22d3ee}
-      [data-variant="cyber"] .skeleton-main{background:#0b0e14}
-      [data-variant="cyber"] .skeleton-map{border-color:rgba(56,189,248,0.08);background:#060a10}
-      [data-variant="cyber"] .skeleton-map-bar{background:#080c12;border-bottom-color:rgba(56,189,248,0.08)}
-      [data-variant="cyber"] .skeleton-map-body::after{background:radial-gradient(ellipse 60% 50% at 50% 50%,#0d1a2a 0%,#060a10 100%)}
-      [data-variant="cyber"] .skeleton-panel{background:#111620;border-color:rgba(56,189,248,0.10)}
-      [data-variant="cyber"] .skeleton-panel-header{border-bottom-color:rgba(56,189,248,0.06)}
-      [data-variant="cyber"] .skeleton-line{background:linear-gradient(90deg,rgba(56,189,248,.03) 25%,rgba(56,189,248,.08) 50%,rgba(56,189,248,.03) 75%);background-size:200% 100%;animation:skel-shimmer 1.5s infinite}
     </style>
-
-    <!-- DM Sans font (cyber variant) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" />
 
     <!-- Styles -->
     <link rel="stylesheet" href="/src/styles/main.css" />

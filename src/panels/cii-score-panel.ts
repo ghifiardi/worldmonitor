@@ -16,7 +16,6 @@ import { Panel } from '@/components/Panel';
 import { getCSSColor } from '@/utils/theme-colors';
 import { calculateCII, type CountryScore, getPreviousScores } from '@/services/country-instability';
 import { h, replaceChildren, rawHtml } from '@/utils/dom-utils';
-import { SITE_VARIANT } from '@/config';
 
 // ── Priority countries with proximity weights ──────────────────────
 
@@ -277,34 +276,6 @@ function injectCSS(): void {
   background: rgba(255,255,255,0.04); color: #888; font-family: 'SF Mono', monospace;
 }
 .cii-footer-obj.active { background: rgba(34,197,94,0.1); color: #22c55e; }
-
-/* Trust Policy Table (cyber variant) */
-.cii-trust-table {
-  margin-bottom: 6px; font-size: 9px; line-height: 1.3;
-  border: 1px solid rgba(56, 189, 248, 0.08); border-radius: 4px;
-  overflow: hidden;
-}
-.cii-trust-row {
-  display: grid; grid-template-columns: 1.2fr 0.8fr 0.9fr 0.9fr 0.8fr 0.9fr;
-  padding: 3px 6px; gap: 2px;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
-}
-.cii-trust-row:last-child { border-bottom: none; }
-.cii-trust-header-row {
-  background: rgba(56, 189, 248, 0.06);
-  font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
-  color: #64748b;
-}
-.cii-trust-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #94a3b8; }
-.cii-trust-tier-col { font-weight: 600; }
-.cii-trust-active {
-  background: rgba(56, 189, 248, 0.06);
-}
-.cii-trust-active .cii-trust-cell { color: #e0e0e0; }
-.cii-trust-tier-glow {
-  color: #38bdf8;
-  text-shadow: 0 0 6px rgba(56, 189, 248, 0.4);
-}
   `;
   document.head.appendChild(style);
 }
@@ -406,11 +377,6 @@ export class CiiScorePanel extends Panel {
     // 1. Header bar
     container.appendChild(this.buildHeader());
 
-    // 1b. Trust policy table (cyber variant only)
-    if (SITE_VARIANT === 'cyber') {
-      container.appendChild(this.buildTrustPolicyTable());
-    }
-
     // 2. Indonesia focus card
     const idScore = this.scores.find(s => s.code === INDONESIA_CODE);
     if (idScore) {
@@ -438,47 +404,6 @@ export class CiiScorePanel extends Panel {
       h('span', { className: 'cii-badge cii-badge-live' }, 'LIVE'),
       h('span', { className: rlBadgeClass }, this.rGeo?.isActive ? 'GATRA RL ACTIVE' : 'GATRA RL'),
     );
-  }
-
-  private buildTrustPolicyTable(): HTMLElement {
-    // Determine which tier is currently active based on the highest CII score
-    const maxScore = Math.max(...this.scores.map(s => s.score), 0);
-    const activeTier = maxScore > 60 ? 'CRITICAL' : maxScore >= 35 ? 'ELEVATED' : 'STANDARD';
-
-    const tiers = [
-      { name: 'STANDARD', range: '0\u201334', jws: '\u2014', allowlist: '\u2014', rateLimit: '100/hr', audit: 'Standard' },
-      { name: 'ELEVATED', range: '35\u201360', jws: 'Required', allowlist: '\u2014', rateLimit: '30/hr', audit: 'Enhanced' },
-      { name: 'CRITICAL', range: '>60', jws: 'Required', allowlist: 'Required', rateLimit: '10/hr', audit: 'Forensic' },
-    ];
-
-    const table = h('div', { className: 'cii-trust-table' });
-
-    // Header row
-    const headerRow = h('div', { className: 'cii-trust-row cii-trust-header-row' },
-      h('span', { className: 'cii-trust-cell cii-trust-tier-col' }, 'Tier'),
-      h('span', { className: 'cii-trust-cell' }, 'CII'),
-      h('span', { className: 'cii-trust-cell' }, 'JWS'),
-      h('span', { className: 'cii-trust-cell' }, 'Allowlist'),
-      h('span', { className: 'cii-trust-cell' }, 'Rate'),
-      h('span', { className: 'cii-trust-cell' }, 'Audit'),
-    );
-    table.appendChild(headerRow);
-
-    for (const tier of tiers) {
-      const isActive = tier.name === activeTier;
-      const rowClass = `cii-trust-row ${isActive ? 'cii-trust-active' : ''}`;
-      const row = h('div', { className: rowClass },
-        h('span', { className: `cii-trust-cell cii-trust-tier-col ${isActive ? 'cii-trust-tier-glow' : ''}` }, tier.name),
-        h('span', { className: 'cii-trust-cell' }, tier.range),
-        h('span', { className: 'cii-trust-cell' }, tier.jws),
-        h('span', { className: 'cii-trust-cell' }, tier.allowlist),
-        h('span', { className: 'cii-trust-cell' }, tier.rateLimit),
-        h('span', { className: 'cii-trust-cell' }, tier.audit),
-      );
-      table.appendChild(row);
-    }
-
-    return table;
   }
 
   private buildFocusCard(score: CountryScore): HTMLElement {

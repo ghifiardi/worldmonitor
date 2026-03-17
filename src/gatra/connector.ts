@@ -26,7 +26,6 @@ import type {
   GatraTAAAnalysis,
   GatraCorrelation,
   GatraConnectorSnapshot,
-  KillChainPhase,
 } from '@/types';
 
 import { getActiveAssetProfile } from '@/config/asset-profile';
@@ -387,289 +386,6 @@ async function fetchFromCisaKev(): Promise<GatraConnectorSnapshot | null> {
   }
 }
 
-// ── abuse.ch threat feeds ────────────────────────────────────────────
-
-/** Country code → centroid for geo-plotting Feodo C2 IPs. */
-const COUNTRY_CENTROIDS: Record<string, { lat: number; lon: number }> = {
-  RU: { lat: 55.75, lon: 37.62 },  CN: { lat: 39.91, lon: 116.39 },
-  US: { lat: 38.90, lon: -77.04 }, NL: { lat: 52.37, lon: 4.90 },
-  DE: { lat: 52.52, lon: 13.41 },  FR: { lat: 48.86, lon: 2.35 },
-  GB: { lat: 51.51, lon: -0.13 },  UA: { lat: 50.45, lon: 30.52 },
-  KR: { lat: 37.57, lon: 126.98 }, JP: { lat: 35.68, lon: 139.69 },
-  BR: { lat: -23.55, lon: -46.64 },IN: { lat: 28.61, lon: 77.21 },
-  SG: { lat: 1.35, lon: 103.82 },  HK: { lat: 22.32, lon: 114.17 },
-  PL: { lat: 52.23, lon: 21.01 },  RO: { lat: 44.43, lon: 26.10 },
-  BG: { lat: 42.70, lon: 23.32 },  CZ: { lat: 50.08, lon: 14.44 },
-  TR: { lat: 41.01, lon: 28.98 },  CA: { lat: 45.42, lon: -75.70 },
-  ID: { lat: -6.21, lon: 106.85 }, AU: { lat: -33.87, lon: 151.21 },
-  TH: { lat: 13.76, lon: 100.50 }, VN: { lat: 21.03, lon: 105.85 },
-  MY: { lat: 3.14, lon: 101.69 },  PH: { lat: 14.60, lon: 120.98 },
-};
-
-function countryCodeToLatLon(code: string): { lat: number; lon: number } {
-  return COUNTRY_CENTROIDS[code?.toUpperCase()] ?? { lat: 0, lon: 20 };
-}
-
-/** Map malware family name → MITRE ATT&CK technique. */
-function malwareToMitre(family: string): { id: string; name: string } {
-  const f = (family || '').toLowerCase();
-  if (/emotet|qakbot|trickbot|dridex|icedid/.test(f)) return { id: 'T1071', name: 'Application Layer Protocol' };
-  if (/cobalt.?strike|metasploit|sliver|brute.?ratel/.test(f)) return { id: 'T1071.001', name: 'Web Protocols (C2 Framework)' };
-  if (/mimikatz|credential/.test(f)) return { id: 'T1003', name: 'OS Credential Dumping' };
-  if (/ransomware|lockbit|blackcat|alphv|cl0p|play|akira/.test(f)) return { id: 'T1486', name: 'Data Encrypted for Impact' };
-  if (/loader|download|smokeloader|bumblebee/.test(f)) return { id: 'T1105', name: 'Ingress Tool Transfer' };
-  if (/stealer|redline|vidar|raccoon|lumma/.test(f)) return { id: 'T1005', name: 'Data from Local System' };
-  if (/remcos|asyncrat|njrat|darkcomet/.test(f)) return { id: 'T1219', name: 'Remote Access Software' };
-  return { id: 'T1071', name: 'Application Layer Protocol' };
-}
-
-/** Map ThreatFox threat_type → kill chain phase. */
-function threatTypeToKillChain(threatType: string): KillChainPhase {
-  switch (threatType) {
-    case 'botnet_cc': return 'c2';
-    case 'payload_delivery': return 'delivery';
-    case 'payload': return 'delivery';
-    case 'exploit': return 'exploitation';
-    default: return 'c2';
-  }
-}
-
-/** Wire types from /api/threat-feeds */
-interface UrlhausWireEntry { id: string; url: string; urlStatus: string; threat: string; tags: string[]; host: string; dateAdded: string; reporter: string; }
-interface FeodoWireEntry { ip: string; port: number; country: string; firstSeen: string; lastOnline: string | null; malware: string; }
-interface ThreatFoxWireEntry { id: string; ioc: string; iocType: string; threatType: string; malware: string; malwarePrintable: string; confidence: number; tags: string[]; firstSeen: string; }
-
-interface AbuseFeedsPayload {
-  urlhaus: UrlhausWireEntry[];
-  feodo: FeodoWireEntry[];
-  threatfox: ThreatFoxWireEntry[];
-  sources: { urlhaus: number; feodo: number; threatfox: number };
-  errors: string[];
-  cachedAt: string;
-}
-
-/** Fetch and map abuse.ch threat feeds into GATRA types. */
-async function fetchFromAbuseCh(): Promise<{
-  alerts: GatraAlert[];
-  craActions: GatraCRAAction[];
-  taaAnalyses: GatraTAAAnalysis[];
-} | null> {
-  try {
-    const res = await fetch('/api/threat-feeds', { signal: AbortSignal.timeout(15000) });
-    if (!res.ok) return null;
-
-    const data = await res.json() as AbuseFeedsPayload;
-    const now = new Date();
-    const alerts: GatraAlert[] = [];
-    const craActions: GatraCRAAction[] = [];
-    const taaAnalyses: GatraTAAAnalysis[] = [];
-
-    // ── URLhaus → alerts + CRA actions ──
-    for (const u of data.urlhaus ?? []) {
-      const loc = KEV_LOCATIONS[Math.abs(hashStr(u.id)) % KEV_LOCATIONS.length]!;
-      const isBotnet = u.threat === 'malware_download' || (u.tags ?? []).some(t => /botnet|c2|rat/i.test(t));
-      const severity: GatraAlert['severity'] = isBotnet ? 'high' : 'medium';
-
-      alerts.push({
-        id: `urlhaus-${u.id}`,
-        severity,
-        mitreId: 'T1105',
-        mitreName: 'Ingress Tool Transfer',
-        description: `Malware URL: ${u.host} — ${u.threat} [${(u.tags ?? []).join(', ')}]`.slice(0, 300),
-        confidence: 85,
-        lat: loc.lat,
-        lon: loc.lon,
-        locationName: `${loc.name} (URLhaus)`,
-        infrastructure: `THREAT-FEED · ${u.host}`,
-        timestamp: u.dateAdded ? new Date(u.dateAdded) : now,
-        agent: 'TAA',
-        abuseFeed: 'urlhaus',
-        malwareFamily: (u.tags ?? [])[0] || u.threat || 'unknown',
-        iocValue: u.url,
-      });
-
-      craActions.push({
-        id: `cra-urlhaus-${u.id}`,
-        action: `Block malware URL: ${u.host} [${u.threat}]`.slice(0, 200),
-        actionType: 'rule_pushed',
-        target: `WAF/Proxy · ${u.host}`,
-        timestamp: u.dateAdded ? new Date(u.dateAdded) : now,
-        success: true,
-      });
-    }
-
-    // ── Feodo Tracker → alerts + CRA actions + TAA analyses ──
-    for (const f of data.feodo ?? []) {
-      const geo = countryCodeToLatLon(f.country);
-      const mitre = malwareToMitre(f.malware);
-
-      alerts.push({
-        id: `feodo-${f.ip}`,
-        severity: 'critical',
-        mitreId: mitre.id,
-        mitreName: `${mitre.name} (C2)`,
-        description: `Botnet C2: ${f.ip}:${f.port} — ${f.malware} [${f.country}]`,
-        confidence: 95,
-        lat: geo.lat + (hashStr(f.ip) % 100) / 500 - 0.1,
-        lon: geo.lon + (hashStr(f.ip + 'x') % 100) / 500 - 0.1,
-        locationName: `${f.country || 'Unknown'} (Feodo)`,
-        infrastructure: `C2-SERVER · ${f.ip}:${f.port}`,
-        timestamp: f.firstSeen ? new Date(f.firstSeen) : now,
-        agent: 'ADA',
-        abuseFeed: 'feodo',
-        malwareFamily: f.malware,
-        iocValue: f.ip,
-      });
-
-      craActions.push({
-        id: `cra-feodo-${f.ip}`,
-        action: `Block C2 server: ${f.ip}:${f.port} (${f.malware})`.slice(0, 200),
-        actionType: 'ip_blocked',
-        target: `Firewall · ${f.ip}`,
-        timestamp: f.firstSeen ? new Date(f.firstSeen) : now,
-        success: true,
-      });
-
-      taaAnalyses.push({
-        id: `taa-feodo-${f.ip}`,
-        alertId: `feodo-${f.ip}`,
-        actorAttribution: `${f.malware} Operator`,
-        campaign: `Feodo-${f.malware}-${f.country}`,
-        killChainPhase: 'c2',
-        confidence: 92,
-        iocs: [f.ip, `${f.ip}:${f.port}`],
-        timestamp: f.firstSeen ? new Date(f.firstSeen) : now,
-      });
-    }
-
-    // ── ThreatFox → alerts + TAA analyses ──
-    for (const t of data.threatfox ?? []) {
-      const loc = KEV_LOCATIONS[Math.abs(hashStr(t.id)) % KEV_LOCATIONS.length]!;
-      const mitre = malwareToMitre(t.malwarePrintable || t.malware);
-      const severity: GatraAlert['severity'] =
-        t.confidence >= 90 ? 'critical' : t.confidence >= 75 ? 'high' : 'medium';
-
-      alerts.push({
-        id: `tfox-${t.id}`,
-        severity,
-        mitreId: mitre.id,
-        mitreName: mitre.name,
-        description: `IOC: ${t.ioc} — ${t.malwarePrintable} (${t.threatType}) [conf: ${t.confidence}%]`.slice(0, 300),
-        confidence: t.confidence,
-        lat: loc.lat,
-        lon: loc.lon,
-        locationName: `${loc.name} (ThreatFox)`,
-        infrastructure: `IOC-${t.iocType.toUpperCase()} · ${t.ioc.slice(0, 60)}`,
-        timestamp: t.firstSeen ? new Date(t.firstSeen) : now,
-        agent: 'TAA',
-        abuseFeed: 'threatfox',
-        malwareFamily: t.malwarePrintable || t.malware,
-        iocValue: t.ioc,
-      });
-
-      taaAnalyses.push({
-        id: `taa-tfox-${t.id}`,
-        alertId: `tfox-${t.id}`,
-        actorAttribution: t.malwarePrintable || 'Unknown Threat Actor',
-        campaign: `ThreatFox-${t.malwarePrintable}-${t.threatType}`.slice(0, 50),
-        killChainPhase: threatTypeToKillChain(t.threatType),
-        confidence: t.confidence,
-        iocs: [t.ioc, ...(t.tags ?? [])],
-        timestamp: t.firstSeen ? new Date(t.firstSeen) : now,
-      });
-    }
-
-    if (alerts.length === 0) return null;
-
-    console.log(`[GatraConnector] abuse.ch feeds: ${data.sources.urlhaus} URLhaus + ${data.sources.feodo} Feodo + ${data.sources.threatfox} ThreatFox = ${alerts.length} alerts`);
-    return { alerts, craActions, taaAnalyses };
-  } catch (err) {
-    console.warn('[GatraConnector] abuse.ch fetch failed:', err);
-    return null;
-  }
-}
-
-/** Simple string → deterministic integer hash. */
-function hashStr(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  return Math.abs(h);
-}
-
-// ── Feed merging ────────────────────────────────────────────────────
-
-function mergeFeedSnapshots(
-  kevSnap: GatraConnectorSnapshot | null,
-  abuseResult: { alerts: GatraAlert[]; craActions: GatraCRAAction[]; taaAnalyses: GatraTAAAnalysis[] } | null,
-): GatraConnectorSnapshot {
-  const now = new Date();
-
-  // Merge alerts
-  const allAlerts = [
-    ...(kevSnap?.alerts ?? []),
-    ...(abuseResult?.alerts ?? []),
-  ];
-
-  // Deduplicate by id
-  const seen = new Set<string>();
-  const alerts: GatraAlert[] = [];
-  // Sort by severity weight first so critical comes first
-  const sevWeight = { critical: 0, high: 1, medium: 2, low: 3 };
-  allAlerts.sort((a, b) => sevWeight[a.severity] - sevWeight[b.severity]);
-  for (const a of allAlerts) {
-    if (!seen.has(a.id)) {
-      seen.add(a.id);
-      alerts.push(a);
-    }
-  }
-
-  // Cap at 80 to keep panel rendering performant
-  const capped = alerts.slice(0, 80);
-
-  // Merge CRA actions and TAA analyses
-  const craActions = [
-    ...(kevSnap?.craActions ?? []),
-    ...(abuseResult?.craActions ?? []),
-  ].slice(0, 12);
-
-  const taaAnalyses = [
-    ...(kevSnap?.taaAnalyses ?? []),
-    ...(abuseResult?.taaAnalyses ?? []),
-  ].slice(0, 10);
-
-  // Recompute summary
-  const critHigh = capped.filter(a => a.severity === 'critical' || a.severity === 'high').length;
-  const summary: GatraIncidentSummary = {
-    activeIncidents: critHigh,
-    mttrMinutes: critHigh > 0 ? 8 : 0,
-    alerts24h: capped.length,
-    responses24h: craActions.filter(c => c.success).length,
-  };
-
-  // Agent status — all online since we have live feeds
-  const agents: GatraAgentStatus[] = kevSnap?.agents ?? [
-    { name: 'ADA', fullName: 'Anomaly Detection Agent', status: 'online', lastHeartbeat: now },
-    { name: 'TAA', fullName: 'Threat Analysis Agent', status: 'online', lastHeartbeat: now },
-    { name: 'CRA', fullName: 'Containment Response Agent', status: 'online', lastHeartbeat: now },
-    { name: 'CLA', fullName: 'Compliance & Logging Agent', status: 'online', lastHeartbeat: now },
-    { name: 'RVA', fullName: 'Risk & Vulnerability Agent', status: 'processing', lastHeartbeat: now },
-  ];
-
-  const kevCount = kevSnap?.alerts.length ?? 0;
-  const abuseCount = abuseResult?.alerts.length ?? 0;
-  console.log(`[GatraConnector] Merged feeds: ${kevCount} KEV + ${abuseCount} abuse.ch = ${capped.length} alerts (capped)`);
-
-  return {
-    alerts: capped,
-    agents,
-    summary,
-    craActions,
-    taaAnalyses,
-    correlations: kevSnap?.correlations ?? [],
-    lastRefresh: now,
-  };
-}
-
 // ── Mock data fetch (fallback) ──────────────────────────────────────
 
 async function fetchFromMock(): Promise<GatraConnectorSnapshot> {
@@ -700,7 +416,7 @@ export async function refreshGatraData(): Promise<GatraConnectorSnapshot> {
   _refreshing = true;
 
   try {
-    // Try GATRA API first (currently disabled)
+    // Cascade: GATRA API → CISA KEV → mock data
     const apiSnap = await fetchFromGatraAPI();
 
     if (apiSnap && apiSnap.alerts.length > 0) {
@@ -708,17 +424,10 @@ export async function refreshGatraData(): Promise<GatraConnectorSnapshot> {
       _source = 'live';
       console.log(`[GatraConnector] Live data: ${apiSnap.alerts.length} alerts from GATRA API`);
     } else {
-      // Fetch CISA KEV + abuse.ch feeds in parallel, then merge
-      const [kevResult, abuseResult] = await Promise.allSettled([
-        fetchFromCisaKev(),
-        fetchFromAbuseCh(),
-      ]);
-
-      const kev = kevResult.status === 'fulfilled' ? kevResult.value : null;
-      const abuse = abuseResult.status === 'fulfilled' ? abuseResult.value : null;
-
-      if (kev || abuse) {
-        _snapshot = mergeFeedSnapshots(kev, abuse);
+      // Try CISA KEV live feed before falling back to mock
+      const kevSnap = await fetchFromCisaKev();
+      if (kevSnap && kevSnap.alerts.length > 0) {
+        _snapshot = kevSnap;
         _source = 'live';
       } else {
         _snapshot = await fetchFromMock();
