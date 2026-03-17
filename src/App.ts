@@ -92,6 +92,7 @@ import { A2aSecurityPanel } from '@/panels/a2a-security-panel';
 import { SocialThreatsPanel } from '@/panels/social-threats-panel';
 import { PersonalSecurityPosturePanel } from '@/panels/personal-security-posture-panel';
 import { SocChatPanel } from '@/panels/soc-chat-panel';
+import { CyberDashboard } from '@/panels/cyber-dashboard';
 import { refreshGatraData, ingestConflictCorrelations } from '@/gatra/connector';
 import type { SearchResult } from '@/components/SearchModal';
 import { collectStoryData } from '@/services/story-data';
@@ -382,6 +383,10 @@ export class App {
   }
 
   public async init(): Promise<void> {
+    // Set data-variant on root FIRST — before any async calls that might fail
+    // so CSS selectors like [data-variant="cyber"] apply immediately
+    document.documentElement.dataset.variant = SITE_VARIANT;
+
     const initStart = performance.now();
     await initDB();
     await initI18n();
@@ -1886,6 +1891,12 @@ export class App {
   }
 
   private renderLayout(): void {
+    // Cyber variant: render dedicated SOC dashboard layout
+    if (SITE_VARIANT === 'cyber') {
+      this.renderCyberDashboard();
+      return;
+    }
+
     this.container.innerHTML = `
       <div class="header">
         <div class="header-left">
@@ -1965,6 +1976,14 @@ export class App {
           <button class="sources-btn" id="sourcesBtn">📡 ${t('header.sources')}</button>
         </div>
       </div>
+      ${SITE_VARIANT === 'cyber' ? `
+      <div class="cyber-metrics-bar">
+        <div class="cm-stat"><span class="cm-val" id="cmTotalAlerts">\u2014</span><span class="cm-label">Total Alerts</span></div>
+        <div class="cm-stat"><span class="cm-val cm-critical" id="cmCritHigh">\u2014</span><span class="cm-label">Critical/High</span></div>
+        <div class="cm-stat"><span class="cm-val" id="cmCII">\u2014</span><span class="cm-label">CII Index</span></div>
+        <div class="cm-stat"><span class="cm-val" id="cmA2A">\u2014</span><span class="cm-label">A2A Traffic</span></div>
+        <div class="cm-stat"><span class="cm-val" id="cmRL">\u2014</span><span class="cm-label">RL Posture</span></div>
+      </div>` : ''}
       <div class="main-content">
         <div class="map-section" id="mapSection">
           <div class="panel-header">
@@ -1982,6 +2001,7 @@ export class App {
           <div class="map-resize-handle" id="mapResizeHandle"></div>
         </div>
         <div class="panels-grid" id="panelsGrid"></div>
+        ${SITE_VARIANT === 'cyber' ? '<div class="cyber-sidebar" id="cyberSidebar"></div>' : ''}
       </div>
       <div class="modal-overlay" id="settingsModal">
         <div class="modal">
@@ -2470,7 +2490,7 @@ export class App {
       const pspPanel = new PersonalSecurityPosturePanel();
       this.panels['personal-security-posture'] = pspPanel;
 
-      // SOC Chat slide-out panel
+      // SOC Chat panel — permanent sidebar for cyber, slide-out for others
       this.socChatPanel = new SocChatPanel();
       this.socChatPanel.setMapCallbacks(
         () => {
@@ -2480,9 +2500,20 @@ export class App {
         (lat, lng, zoom) => this.map?.setCenter(lat, lng, zoom),
       );
 
-      // Add SOC COMMS toggle button to header-right
+      // Embed permanent sidebar for cyber variant
+      const cyberSidebar = this.container.querySelector('.cyber-sidebar') as HTMLElement | null;
+      if (cyberSidebar) {
+        try {
+          const sidebarContent = this.socChatPanel.createPermanentSidebar();
+          cyberSidebar.appendChild(sidebarContent);
+        } catch (err) {
+          console.error('[App] Failed to create permanent sidebar:', err);
+        }
+      }
+
+      // Always add SOC toggle button to header (for mobile fallback + sidebar-less case)
       const headerRight = document.querySelector('.header-right');
-      if (headerRight) {
+      if (headerRight && !cyberSidebar) {
         const socToggle = this.socChatPanel.createToggleButton();
         const settingsBtn = headerRight.querySelector('.settings-btn');
         if (settingsBtn) {
@@ -2738,6 +2769,51 @@ export class App {
         grid.appendChild(dragging);
       }
     });
+  }
+
+  private renderCyberDashboard(): void {
+    // Minimal container for cyber dashboard
+    this.container.innerHTML = `
+      <div id="cyberDashboardRoot"></div>
+      <div class="modal-overlay" id="settingsModal">
+        <div class="modal">
+          <div class="modal-header">
+            <span class="modal-title">Settings</span>
+            <button class="modal-close" id="modalClose">\u00d7</button>
+          </div>
+          <div class="panel-toggle-grid" id="panelToggles"></div>
+        </div>
+      </div>
+    `;
+
+    // Import and create CyberDashboard
+    const dashRoot = document.getElementById('cyberDashboardRoot')!;
+    const dashboard = new CyberDashboard(dashRoot);
+    dashboard.render();
+
+    // Create SOC Chat panel and embed in sidebar
+    this.socChatPanel = new SocChatPanel();
+    this.socChatPanel.setMapCallbacks(
+      () => null,
+      () => {},
+    );
+    const sidebarContent = this.socChatPanel.createPermanentSidebar();
+    dashboard.attachSidebar(sidebarContent);
+
+    // Create key panels for data access (not displayed directly)
+    const gatraPanel = new GatraSOCDashboardPanel();
+    this.panels['gatra-soc'] = gatraPanel;
+
+    // Settings modal close
+    const modalClose = document.getElementById('modalClose');
+    if (modalClose) {
+      modalClose.addEventListener('click', () => {
+        document.getElementById('settingsModal')?.classList.remove('active');
+      });
+    }
+
+    // Store dashboard reference for data refresh
+    (this as any)._cyberDashboard = dashboard;
   }
 
   private setupEventListeners(): void {
@@ -4261,8 +4337,47 @@ export class App {
         this.map?.setGatraAlerts(snap.alerts);
       }
       dataFreshness.recordUpdate('gatra' as DataSourceId, snap.alerts.length);
+
+      // Update cyber metrics bar
+      this.updateCyberMetricsBar(snap);
     } catch (error) {
       console.error('[App] GATRA data load failed:', error);
+    }
+  }
+
+  private updateCyberMetricsBar(snap: { alerts: { severity: string }[]; summary: { alerts24h: number } }): void {
+    if (SITE_VARIANT !== 'cyber') return;
+    const totalEl = document.getElementById('cmTotalAlerts');
+    const critEl = document.getElementById('cmCritHigh');
+    const ciiEl = document.getElementById('cmCII');
+    const a2aEl = document.getElementById('cmA2A');
+    const rlEl = document.getElementById('cmRL');
+
+    if (totalEl) totalEl.textContent = String(snap.summary.alerts24h || snap.alerts.length);
+    if (critEl) {
+      const critHigh = snap.alerts.filter(a => a.severity === 'critical' || a.severity === 'high').length;
+      critEl.textContent = String(critHigh);
+    }
+
+    // CII: read from the CII panel's latest Indonesia score
+    if (ciiEl) {
+      const scores = calculateCII();
+      const idScore = scores.find(s => s.code === 'ID');
+      ciiEl.textContent = idScore ? String(idScore.score) : '\u2014';
+    }
+
+    // A2A traffic count (from a2a-security panel data if available)
+    if (a2aEl) {
+      const a2aPanel = this.panels['a2a-security'];
+      a2aEl.textContent = a2aPanel ? 'Active' : '\u2014';
+    }
+
+    // RL posture
+    if (rlEl) {
+      const scores = calculateCII();
+      const idScore = scores.find(s => s.code === 'ID');
+      rlEl.textContent = idScore && idScore.score >= 60 ? 'ELEVATED' : 'NOMINAL';
+      rlEl.className = `cm-val ${idScore && idScore.score >= 60 ? 'cm-critical' : ''}`;
     }
   }
 

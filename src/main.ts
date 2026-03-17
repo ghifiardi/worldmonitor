@@ -140,6 +140,11 @@ loadDesktopSecrets().then(async () => {
 // Apply stored theme preference before app initialization (safety net for inline script)
 applyStoredTheme();
 
+// Set data-variant on root element immediately for CSS targeting
+// This must happen before any DOM rendering so [data-variant="cyber"] styles apply
+import { SITE_VARIANT } from '@/config/variant';
+document.documentElement.dataset.variant = SITE_VARIANT;
+
 // Remove no-transition class after first paint to enable smooth theme transitions
 requestAnimationFrame(() => {
   document.documentElement.classList.remove('no-transition');

@@ -1327,6 +1327,14 @@ export interface GatraAlert {
   kevVendor?: string;
   /** Original CISA KEV product. */
   kevProduct?: string;
+
+  // ── Threat feed attribution (set by connector for abuse.ch feeds) ──
+  /** Source abuse.ch feed that generated this alert. */
+  abuseFeed?: 'urlhaus' | 'feodo' | 'threatfox';
+  /** Malware family name from threat intel feed. */
+  malwareFamily?: string;
+  /** Raw IOC value (IP, URL, domain) that triggered this alert. */
+  iocValue?: string;
 }
 
 export interface GatraAgentStatus {

@@ -2213,6 +2213,61 @@ export class SocChatPanel {
     this.flyToCoords = flyTo;
   }
 
+  // ── Permanent sidebar mode (cyber variant) ────────────────────
+
+  public createPermanentSidebar(): HTMLElement {
+    // Extract the drawer content from the overlay and return it as a standalone element
+    const drawer = this.overlay.querySelector('.soc-chat-drawer') as HTMLElement;
+    if (!drawer) {
+      // Fallback: return empty container
+      const empty = document.createElement('div');
+      empty.className = 'cyber-sidebar-content';
+      return empty;
+    }
+
+    // Clone the drawer, restyle for permanent embedding
+    const sidebar = document.createElement('div');
+    sidebar.className = 'cyber-sidebar-content';
+    sidebar.style.cssText = 'display:flex;flex-direction:column;height:100%;overflow:hidden;';
+
+    // Move the drawer content into the sidebar
+    // Remove the close button since it's always visible
+    const closeBtn = drawer.querySelector('.soc-chat-close');
+    if (closeBtn) closeBtn.remove();
+
+    // Re-parent drawer children into sidebar
+    while (drawer.firstChild) {
+      sidebar.appendChild(drawer.firstChild);
+    }
+
+    // Put sidebar content back for msgs/input references
+    this.msgsEl = sidebar.querySelector('.soc-chat-msgs') as HTMLElement;
+    this.inputEl = sidebar.querySelector('.soc-chat-input') as HTMLTextAreaElement;
+
+    // Re-bind events on new elements
+    sidebar.querySelector('.soc-chat-send')?.addEventListener('click', () => this.send());
+    this.inputEl?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); }
+    });
+    for (const btn of sidebar.querySelectorAll('.soc-chat-action-btn')) {
+      btn.addEventListener('click', () => {
+        const action = (btn as HTMLElement).dataset.action;
+        if (action === 'alert') this.toggleAlertPicker();
+        else if (action === 'location') this.shareLocation();
+        else if (action === 'incident') this.createIncident();
+        else if (action === 'help') { this.inputEl.value = '/help'; this.send(); }
+      });
+    }
+
+    // Mark as permanently open
+    this.isOpen = true;
+
+    // Remove the overlay from body since we're embedded now
+    this.overlay.remove();
+
+    return sidebar;
+  }
+
   // ── Toggle button in top bar ───────────────────────────────────
 
   public createToggleButton(): HTMLElement {
