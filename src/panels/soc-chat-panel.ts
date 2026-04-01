@@ -81,7 +81,7 @@ const GATRA_AGENTS: GatraAgentDef[] = [
     triggerPatterns: [
       /why.*(escalat|triag|prioriti)/i,
       /threat/i, /risk\s*(assess|level|score)/i,
-      /mitre|att&ck|kill\s*chain|technique|tactic/i,
+      /mitre|att&ck|kill\s*chain|technique|tactic/i, /\bT\d{4}(?:\.\d{3})?\b/,
       /triag/i, /prioriti/i, /escalat/i,
       /what.*(should|next|first)/i, /rank|order/i, /queue/i,
       // Expanded: threat intel, APTs (numbered + named), IOCs, phishing, social engineering, campaigns
@@ -526,6 +526,39 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
 
     // ── TAA: Threat Analysis Agent ────────────────────────────────
     case 'taa': {
+      // ── MITRE technique lookup FIRST — "what is T1059", "T1566.001", "explain T1021"
+      const techniqueMatch = message.match(/\bT(\d{4})(?:\.(\d{3}))?\b/i);
+      if (techniqueMatch) {
+        await ensureMitreDb();
+        const tid = `T${techniqueMatch[1]}${techniqueMatch[2] ? `.${techniqueMatch[2]}` : ''}`;
+        const info = lookupMitreTechnique(tid) ?? lookupMitreTechnique(`T${techniqueMatch[1]}`);
+        if (info) {
+          const activeHits = alerts.filter(a => a.mitreId === tid || a.mitreId.startsWith(`T${techniqueMatch[1]}`));
+          const subs: MitreTechniqueEntry[] = [];
+          if (!tid.includes('.') && _mitreDb) {
+            for (const [k, v] of _mitreDb) {
+              if (k.startsWith(tid + '.')) subs.push(v);
+            }
+          }
+          let response = `MITRE ATT&CK: ${info.id} \u2014 ${info.name}\n` +
+            `${'━'.repeat(40)}\n` +
+            `Tactic: ${info.tactic}\n\n` +
+            `${info.desc}`;
+          if (subs.length > 0) {
+            response += `\n\nSub-techniques (${subs.length}):\n` +
+              subs.slice(0, 10).map(s => `  ${s.id} \u2014 ${s.name}`).join('\n') +
+              (subs.length > 10 ? `\n  ... and ${subs.length - 10} more` : '');
+          }
+          if (activeHits.length > 0) {
+            response += `\n\n\u26A0\uFE0F Active in this session: ${activeHits.length} alert(s) matching ${tid}`;
+          }
+          response += `\n\nRef: https://attack.mitre.org/techniques/${tid.replace('.', '/')}/`;
+          return response;
+        }
+        return `${tid} not found in MITRE ATT&CK database (691 techniques loaded).\n` +
+          `Check: https://attack.mitre.org/techniques/${tid.replace('.', '/')}/`;
+      }
+
       // Why was it escalated / triaged
       if (/why.*(escalat|triag|prioriti)/i.test(message)) {
         const alert = alerts.find(a => a.severity === 'critical') ?? alerts[0];
@@ -556,41 +589,7 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
           `\u2022 Recommendation: ${sev.critical > 0 ? 'Immediate review of ESCALATE queue. CRA standby for containment.' : 'Standard posture. No immediate escalation needed.'}`;
       }
 
-      // MITRE technique lookup — "what is T1059", "T1566.001", "explain T1021"
-      const techniqueMatch = message.match(/\bT(\d{4})(?:\.(\d{3}))?\b/i);
-      if (techniqueMatch) {
-        await ensureMitreDb();
-        const tid = `T${techniqueMatch[1]}${techniqueMatch[2] ? `.${techniqueMatch[2]}` : ''}`;
-        const info = lookupMitreTechnique(tid) ?? lookupMitreTechnique(`T${techniqueMatch[1]}`);
-        if (info) {
-          const activeHits = alerts.filter(a => a.mitreId === tid || a.mitreId.startsWith(`T${techniqueMatch[1]}`));
-          // Find sub-techniques if this is a parent
-          const subs: MitreTechniqueEntry[] = [];
-          if (!tid.includes('.') && _mitreDb) {
-            for (const [k, v] of _mitreDb) {
-              if (k.startsWith(tid + '.')) subs.push(v);
-            }
-          }
-          let response = `MITRE ATT&CK: ${info.id} \u2014 ${info.name}\n` +
-            `${'━'.repeat(40)}\n` +
-            `Tactic: ${info.tactic}\n\n` +
-            `${info.desc}`;
-          if (subs.length > 0) {
-            response += `\n\nSub-techniques (${subs.length}):\n` +
-              subs.slice(0, 10).map(s => `  ${s.id} \u2014 ${s.name}`).join('\n') +
-              (subs.length > 10 ? `\n  ... and ${subs.length - 10} more` : '');
-          }
-          if (activeHits.length > 0) {
-            response += `\n\n\u26A0\uFE0F Active in this session: ${activeHits.length} alert(s) matching ${tid}`;
-          }
-          response += `\n\nRef: https://attack.mitre.org/techniques/${tid.replace('.', '/')}/`;
-          return response;
-        }
-        return `${tid} not found in MITRE ATT&CK database (691 techniques loaded).\n` +
-          `Check: https://attack.mitre.org/techniques/${tid.replace('.', '/')}/`;
-      }
-
-      // MITRE general mapping (no specific technique ID asked)
+      // MITRE general mapping (no specific technique ID asked — technique IDs handled at top of TAA)
       if (/mitre|att&?ck|technique|tactic|kill\s*chain/i.test(message)) {
         const byTechnique = dedupeByTechnique(alerts);
         const lines = [...byTechnique.values()].slice(0, 6).map(({ a, count }) =>
