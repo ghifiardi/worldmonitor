@@ -550,7 +550,12 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
               (subs.length > 10 ? `\n  ... and ${subs.length - 10} more` : '');
           }
           if (activeHits.length > 0) {
-            response += `\n\n\u26A0\uFE0F Active in this session: ${activeHits.length} alert(s) matching ${tid}`;
+            response += `\n\n\u26A0\uFE0F Active alerts (${activeHits.length}) matching ${tid}:`;
+            for (const a of activeHits.slice(0, 8)) {
+              response += `\n  ${a.id}  [${a.severity}]  ${a.mitreName}  (${a.confidence}%)`;
+            }
+            if (activeHits.length > 8) response += `\n  ... and ${activeHits.length - 8} more`;
+            response += `\n\nActions: /escalate ${tid}  \u00B7  /investigate ${tid}  \u00B7  /dismiss ${tid}`;
           }
           response += `\n\nRef: https://attack.mitre.org/techniques/${tid.replace('.', '/')}/`;
           return response;
@@ -1990,6 +1995,32 @@ const responseGate = new ResponseGateClient();
 let gateIdCounter = 0;
 function gateId(): string { return `G${(++gateIdCounter).toString().padStart(3, '0')}`; }
 
+// ── Alert target resolution (accepts alert ID, technique ID, or severity) ──
+
+function resolveAlertTarget(target: string, alerts: GatraAlert[]): GatraAlert[] {
+  const t = target.trim();
+  // Exact alert ID match (ALR-xxx, INC-xxx, or any ID)
+  const byId = alerts.filter(a => a.id.toLowerCase() === t.toLowerCase());
+  if (byId.length > 0) return byId;
+  // MITRE technique match (T1059, T1059.001)
+  const techRe = /^T\d{4}(?:\.\d{3})?$/i;
+  if (techRe.test(t)) {
+    const upper = t.toUpperCase();
+    return alerts.filter(a => a.mitreId === upper || a.mitreId.startsWith(upper + '.') || a.mitreId.startsWith(upper));
+  }
+  // Severity match (critical, high, medium, low)
+  if (/^(critical|high|medium|low)$/i.test(t)) {
+    return alerts.filter(a => a.severity.toLowerCase() === t.toLowerCase());
+  }
+  // Partial name match
+  const lower = t.toLowerCase();
+  return alerts.filter(a =>
+    a.mitreName.toLowerCase().includes(lower) ||
+    a.mitreId.toLowerCase().includes(lower) ||
+    a.id.toLowerCase().includes(lower)
+  );
+}
+
 // ── Slash commands ────────────────────────────────────────────────
 
 function processCommand(input: string): string | null {
@@ -2063,10 +2094,41 @@ function processCommand(input: string): string | null {
         ).join('\n') +
         `\n\n/approve <id>  \u00B7  /approve-all  \u00B7  /deny <id>  \u00B7  /deny-all`;
     },
-    'escalate': () => `TAA: Alert ${args || '<id>'} manually escalated to CRITICAL.`,
-    'dismiss': () => `TAA: Alert ${args || '<id>'} dismissed by analyst. Logged.`,
-    'investigate': () => `TAA: Alert ${args || '<id>'} moved to INVESTIGATE queue.`,
-    'fp': () => `ADA: Alert ${args || '<id>'} marked false positive. Model feedback queued.`,
+    'escalate': () => {
+      if (!args) return 'Usage: /escalate <alert-id or technique>\nExamples: /escalate ALR-abc123  \u00B7  /escalate T1059';
+      const matched = resolveAlertTarget(args, alerts);
+      if (matched.length === 0) return `No alerts found matching "${args}".`;
+      return `TAA: \u2B06\uFE0F Escalated ${matched.length} alert(s) matching "${args}" to CRITICAL.\n` +
+        matched.slice(0, 5).map(a => `  ${a.id}  [${a.severity} \u2192 critical]  ${a.mitreId} \u2013 ${a.mitreName}`).join('\n') +
+        (matched.length > 5 ? `\n  ... and ${matched.length - 5} more` : '') +
+        `\nCRA on standby for containment.`;
+    },
+    'dismiss': () => {
+      if (!args) return 'Usage: /dismiss <alert-id or technique>';
+      const matched = resolveAlertTarget(args, alerts);
+      if (matched.length === 0) return `No alerts found matching "${args}".`;
+      return `TAA: Dismissed ${matched.length} alert(s) matching "${args}". Logged by CLA.\n` +
+        matched.slice(0, 5).map(a => `  ${a.id}  ${a.mitreId} \u2013 ${a.mitreName}`).join('\n') +
+        (matched.length > 5 ? `\n  ... and ${matched.length - 5} more` : '');
+    },
+    'investigate': () => {
+      if (!args) return 'Usage: /investigate <alert-id or technique>';
+      const matched = resolveAlertTarget(args, alerts);
+      if (matched.length === 0) return `No alerts found matching "${args}".`;
+      return `TAA: \uD83D\uDD0E ${matched.length} alert(s) matching "${args}" moved to INVESTIGATE queue.\n` +
+        matched.slice(0, 5).map(a => `  ${a.id}  [${a.severity}]  ${a.mitreId} \u2013 ${a.mitreName}`).join('\n') +
+        (matched.length > 5 ? `\n  ... and ${matched.length - 5} more` : '');
+    },
+    'fp': () => {
+      if (!args) return 'Usage: /fp <alert-id or technique>';
+      const matched = resolveAlertTarget(args, alerts);
+      if (matched.length === 0) return `No alerts found matching "${args}".`;
+      return `ADA: ${matched.length} alert(s) matching "${args}" marked false positive.\n` +
+        `\u2022 Suppressed for this source pattern\n` +
+        `\u2022 Model retrains with feedback in next cycle (T+15m)\n` +
+        matched.slice(0, 3).map(a => `  ${a.id}  ${a.mitreId}`).join('\n') +
+        (matched.length > 3 ? `\n  ... and ${matched.length - 3} more` : '');
+    },
     'report': () => `CLA: Generating incident report... ${alerts.length} alerts, ${actions.length} actions.`,
     'status': () => {
       const agentStatuses = getAgentStatus();
