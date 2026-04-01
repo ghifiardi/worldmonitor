@@ -2024,6 +2024,42 @@ const responseGate = new ResponseGateClient();
 let gateIdCounter = 0;
 function gateId(): string { return `G${(++gateIdCounter).toString().padStart(3, '0')}`; }
 
+// ── Backend relay — sends approved actions to gatra-local via /api/gatra-cra ──
+
+async function relayCraAction(
+  action: string,
+  target: string,
+  opts: { reason?: string; severity?: string; confidence?: number } = {},
+): Promise<{ success: boolean; detail: string; backend: boolean }> {
+  try {
+    const res = await fetch('/api/gatra-cra', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action,
+        target,
+        reason: opts.reason || 'SOC analyst command',
+        severity: opts.severity || 'high',
+        confidence: opts.confidence || 0.85,
+      }),
+    });
+    const data = await res.json();
+    if (data.error === 'gatra-local not reachable') {
+      return { success: false, detail: 'gatra-local not running (simulated only)', backend: false };
+    }
+    if (data.executed === false && data.gate_id) {
+      return { success: true, detail: `Backend gate held: ${data.reason}`, backend: true };
+    }
+    return {
+      success: data.success !== false,
+      detail: data.executed ? 'Executed on backend' : (data.error || 'Unknown'),
+      backend: true,
+    };
+  } catch {
+    return { success: false, detail: 'Backend unreachable (simulated only)', backend: false };
+  }
+}
+
 // ── Natural language intent detection ────────────────────────────
 // Converts "escalate T1059", "block 10.0.0.1", etc. into slash commands
 // so analysts don't need to remember / syntax.
@@ -2135,6 +2171,9 @@ function resolveAlertTarget(target: string, alerts: GatraAlert[]): GatraAlert[] 
   );
 }
 
+// ── System message callback (set by SocChatPanel on construction) ──
+let _postSystemMessage: (text: string) => void = () => {};
+
 // ── Slash commands ────────────────────────────────────────────────
 
 function processCommand(input: string): string | null {
@@ -2180,13 +2219,32 @@ function processCommand(input: string): string | null {
       }
       const approved = responseGate.approve(args);
       if (!approved) return `"${args}" not found. Type /pending to see queue.`;
-      return `CRA: \u2705 Approved \u2014 ${approved.action} ${approved.target} executing.`;
+      // Fire backend relay async
+      relayCraAction(approved.action, approved.target, {
+        reason: approved.reason, severity: approved.severity, confidence: approved.confidence,
+      }).then(r => {
+        _postSystemMessage(r.backend
+          ? (r.success ? `\u2705 Backend: ${approved.action} ${approved.target} executed.` : `\u26A0\uFE0F Backend: ${r.detail}`)
+          : `\u26A0\uFE0F ${r.detail}`);
+      });
+      return `CRA: \u2705 Approved \u2014 ${approved.action} ${approved.target} sending to backend...`;
     },
     'approve-all': () => {
       const approved = responseGate.approveAll();
       if (approved.length === 0) return 'No pending actions.';
+      // Fire backend relay for each action
+      for (const p of approved) {
+        relayCraAction(p.action, p.target, {
+          reason: p.reason, severity: p.severity, confidence: p.confidence,
+        }).then(r => {
+          _postSystemMessage(r.backend
+            ? (r.success ? `\u2705 Backend: ${p.action} ${p.target} executed.` : `\u26A0\uFE0F Backend: ${r.detail}`)
+            : `\u26A0\uFE0F ${r.detail}`);
+        });
+      }
       return `CRA: \u2705 Approved ${approved.length} action(s):\n` +
-        approved.map(p => `  \u2022 ${p.action} ${p.target}`).join('\n');
+        approved.map(p => `  \u2022 ${p.action} ${p.target}`).join('\n') +
+        `\nSending to backend...`;
     },
     'deny': () => {
       if (!args) return 'Usage: /deny <id>  or  /deny-all';
@@ -2660,6 +2718,9 @@ export class SocChatPanel {
 
     // Listen for GATRA events to post system messages
     this.setupEventListeners();
+
+    // Register system message callback for async backend relay responses
+    _postSystemMessage = (text: string) => this.addSystemMessage(text);
 
     // Welcome message
     this.addSystemMessage('SOC COMMS initialized. 5 GATRA agents online. Type /help for commands.');
