@@ -1023,8 +1023,27 @@ const CYBER_FEEDS: Record<string, Feed[]> = {
   ],
 };
 
+// ============================================
+// SOC VARIANT (GATRA SOC Demo — minimal feeds)
+// ============================================
+const SOC_FEEDS: Record<string, Feed[]> = {
+  security: [
+    { name: 'Krebs on Security', url: rss('https://krebsonsecurity.com/feed/') },
+    { name: 'The Hacker News', url: rss('https://feeds.feedburner.com/TheHackersNews') },
+    { name: 'Dark Reading', url: rss('https://www.darkreading.com/rss.xml') },
+  ],
+  threats: [
+    { name: 'CISA Advisories', url: rss('https://www.cisa.gov/cybersecurity-advisories/all.xml') },
+    { name: 'Cyber Incidents', url: rss('https://news.google.com/rss/search?q=(cyber+attack+OR+data+breach+OR+ransomware+OR+hacking)+when:3d&hl=en-US&gl=US&ceid=US:en') },
+  ],
+  indonesia: [
+    { name: 'Keamanan Siber ID', url: rss('https://news.google.com/rss/search?q="keamanan+siber"+OR+"BSSN"+OR+"serangan+siber"+OR+"kebocoran+data"+when:3d&hl=id&gl=ID&ceid=ID:id') },
+    { name: 'Indonesia Cyber', url: rss('https://news.google.com/rss/search?q=Indonesia+"data+breach"+OR+"cyber+attack"+OR+"BSSN"+when:7d&hl=en&gl=ID&ceid=ID:en') },
+  ],
+};
+
 // Variant-aware exports
-export const FEEDS = SITE_VARIANT === 'tech' ? TECH_FEEDS : SITE_VARIANT === 'finance' ? FINANCE_FEEDS : SITE_VARIANT === 'cyber' ? CYBER_FEEDS : FULL_FEEDS;
+export const FEEDS = SITE_VARIANT === 'tech' ? TECH_FEEDS : SITE_VARIANT === 'finance' ? FINANCE_FEEDS : SITE_VARIANT === 'cyber' ? CYBER_FEEDS : SITE_VARIANT === 'soc' ? SOC_FEEDS : FULL_FEEDS;
 
 export const INTEL_SOURCES: Feed[] = [
   // Defense & Security (Tier 1)

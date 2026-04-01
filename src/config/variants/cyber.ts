@@ -158,11 +158,11 @@ export const DEFAULT_MAP_LAYERS: MapLayers = {
   gatraAlerts: true,
 };
 
-// Mobile defaults for cyber variant
+// Mobile defaults for cyber variant — minimal layers to avoid clutter
 export const MOBILE_DEFAULT_MAP_LAYERS: MapLayers = {
-  conflicts: true,
+  conflicts: false,
   bases: false,
-  cables: true,
+  cables: false,
   pipelines: false,
   hotspots: false,
   ais: false,
@@ -176,12 +176,12 @@ export const MOBILE_DEFAULT_MAP_LAYERS: MapLayers = {
   cyberThreats: true,
   datacenters: false,
   protests: false,
-  flights: true,
+  flights: false,
   military: false,
-  natural: true,
+  natural: false,
   spaceports: false,
   minerals: false,
-  fires: true,
+  fires: false,
   // Data source layers
   ucdpEvents: false,
   displacement: false,
@@ -198,7 +198,7 @@ export const MOBILE_DEFAULT_MAP_LAYERS: MapLayers = {
   centralBanks: false,
   commodityHubs: false,
   gulfInvestments: false,
-  // GATRA SOC layer — enabled on mobile too
+  // GATRA SOC layer — the primary layer on mobile
   gatraAlerts: true,
 };
 

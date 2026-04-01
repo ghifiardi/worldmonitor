@@ -2838,6 +2838,14 @@ export class DeckGLMap {
           { key: 'natural', label: t('components.deckgl.layers.naturalEvents'), icon: '&#127755;' },
           { key: 'cyberThreats', label: t('components.deckgl.layers.cyberThreats'), icon: '&#128737;' },
         ]
+      : SITE_VARIANT === 'soc'
+      ? [
+          { key: 'gatraAlerts', label: t('components.deckgl.layers.gatraAlerts'), icon: '&#128737;' },
+          { key: 'cyberThreats', label: t('components.deckgl.layers.cyberThreats'), icon: '&#128274;' },
+          { key: 'cables', label: t('components.deckgl.layers.underseaCables'), icon: '&#128268;' },
+          { key: 'datacenters', label: t('components.deckgl.layers.aiDataCenters'), icon: '&#128421;' },
+          { key: 'outages', label: t('components.deckgl.layers.internetOutages'), icon: '&#128225;' },
+        ]
       : SITE_VARIANT === 'cyber'
       ? [
           { key: 'gatraAlerts', label: t('components.deckgl.layers.gatraAlerts'), icon: '&#128737;' },
