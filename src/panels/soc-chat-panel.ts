@@ -526,14 +526,43 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
 
     // ── TAA: Threat Analysis Agent ────────────────────────────────
     case 'taa': {
-      // ── MITRE technique lookup FIRST — "what is T1059", "T1566.001", "explain T1021"
+      // ── MITRE technique with context — detect if asking about alerts vs definition ──
       const techniqueMatch = message.match(/\bT(\d{4})(?:\.(\d{3}))?\b/i);
       if (techniqueMatch) {
         await ensureMitreDb();
         const tid = `T${techniqueMatch[1]}${techniqueMatch[2] ? `.${techniqueMatch[2]}` : ''}`;
         const info = lookupMitreTechnique(tid) ?? lookupMitreTechnique(`T${techniqueMatch[1]}`);
+        const activeHits = alerts.filter(a => a.mitreId === tid || a.mitreId.startsWith(`T${techniqueMatch[1]}`));
+
+        // Detect intent: asking about alerts/threats, or asking for definition?
+        const askingAboutAlerts = /\b(alert|threat|incident|new|any|active|recent|current|show|list|how\s*many|related|status|update|detect|trigger|fire|match|hit)\b/i.test(message);
+
+        if (askingAboutAlerts) {
+          // ── Alert-focused response ──
+          const techniqueName = info?.name ?? tid;
+          if (activeHits.length === 0) {
+            return `No active alerts matching ${tid} (${techniqueName}).\n` +
+              `\u2022 ${alerts.length} total alerts in session, none for this technique.\n` +
+              `\u2022 Type "what is ${tid}" for technique details.`;
+          }
+          const bySev = { critical: 0, high: 0, medium: 0, low: 0 };
+          for (const a of activeHits) bySev[a.severity as keyof typeof bySev] = (bySev[a.severity as keyof typeof bySev] || 0) + 1;
+          let response = `${activeHits.length} active alert(s) for ${tid} \u2014 ${techniqueName}:\n` +
+            `${'━'.repeat(40)}\n` +
+            `Severity: ${bySev.critical} CRIT / ${bySev.high} HIGH / ${bySev.medium} MED / ${bySev.low} LOW\n\n`;
+          for (const a of activeHits.slice(0, 10)) {
+            const ago = Math.round((Date.now() - a.timestamp.getTime()) / 60000);
+            response += `  ${a.id}  [${a.severity}]  ${a.confidence}%  ${ago}m ago`;
+            if (a.infrastructure) response += `  \u2022 ${a.infrastructure}`;
+            response += '\n';
+          }
+          if (activeHits.length > 10) response += `  ... and ${activeHits.length - 10} more\n`;
+          response += `\nActions: /escalate ${tid}  \u00B7  /investigate ${tid}  \u00B7  /dismiss ${tid}`;
+          return response;
+        }
+
+        // ── Definition-focused response ──
         if (info) {
-          const activeHits = alerts.filter(a => a.mitreId === tid || a.mitreId.startsWith(`T${techniqueMatch[1]}`));
           const subs: MitreTechniqueEntry[] = [];
           if (!tid.includes('.') && _mitreDb) {
             for (const [k, v] of _mitreDb) {
