@@ -2077,6 +2077,7 @@ function detectActionIntent(text: string): DetectedIntent | null {
   if (m && /^(?:T\d{4}|ALR-|CVE-)/i.test(m[1]!.trim())) return { command: 'fp', target: m[1]!.trim(), original: t };
 
   // ── Approve / authorize / execute ──
+  if (/^approve[\s-]?all\s*$/i.test(stripped)) return { command: 'approve-all', target: '', original: t };
   m = stripped.match(/^(?:approve|authorize|execute|confirm|accept|permit)\s+(?:all|everything|pending)\s*$/i);
   if (m) return { command: 'approve-all', target: '', original: t };
   m = stripped.match(/^(?:approve|authorize|execute|confirm|accept|permit)\s+(.+)/i);
@@ -2086,6 +2087,7 @@ function detectActionIntent(text: string): DetectedIntent | null {
   }
 
   // ── Deny / reject / cancel ──
+  if (/^deny[\s-]?all\s*$/i.test(stripped)) return { command: 'deny-all', target: '', original: t };
   m = stripped.match(/^(?:deny|reject|cancel|abort|revoke|refuse)\s+(?:all|everything|pending)\s*$/i);
   if (m) return { command: 'deny-all', target: '', original: t };
   m = stripped.match(/^(?:deny|reject|cancel|abort|revoke|refuse)\s+(.+)/i);
@@ -2293,7 +2295,23 @@ function processCommand(input: string): string | null {
     prioritize: 'escalate', raise: 'escalate', bump: 'escalate', upgrade: 'escalate',
   };
 
-  const resolved = aliases[cmd] ?? cmd;
+  // Typo correction — common misspellings
+  const typoFixes: Record<string, string> = {
+    apporve: 'approve', apprrove: 'approve', aprove: 'approve', approv: 'approve',
+    approveall: 'approve-all', 'apporve-all': 'approve-all', 'aprove-all': 'approve-all',
+    denyall: 'deny-all',
+    esclate: 'escalate', escaalte: 'escalate', escalte: 'escalate',
+    investiagte: 'investigate', investgate: 'investigate', invesitgate: 'investigate',
+    dimiss: 'dismiss', dismis: 'dismiss',
+    isolte: 'isolate', isloate: 'isolate',
+    blcok: 'block', bloack: 'block',
+    termiante: 'terminate', terminat: 'terminate',
+    contian: 'contain', containe: 'contain',
+    pening: 'pending', pendign: 'pending',
+  };
+
+  const fixed = typoFixes[cmd] ?? cmd;
+  const resolved = aliases[fixed] ?? fixed;
   const handler = handlers[resolved];
   return handler ? handler() : `Unknown command: /${cmd}. Type /help for list.`;
 }
