@@ -2036,8 +2036,15 @@ const CRA_ENDPOINT_MAP: Record<string, (target: string, opts: Record<string, unk
   isolate: (t, o) => ({ url: `/api/cra/block?ip=${encodeURIComponent(t)}&reason=${encodeURIComponent('endpoint isolation: ' + String(o.reason || ''))}&severity=critical&confidence=0.95`, method: 'POST' }),
 };
 
-// gatra-local URL — try localhost (same machine as analyst)
-const GATRA_LOCAL_URL = 'http://127.0.0.1:8847';
+// gatra-local URL — configurable via localStorage or default to localhost
+// Set via SOC chat: /set-backend http://127.0.0.1:8847
+function getGatraLocalUrl(): string {
+  try {
+    return localStorage.getItem('gatra_local_url') || 'http://127.0.0.1:8847';
+  } catch {
+    return 'http://127.0.0.1:8847';
+  }
+}
 
 async function relayCraAction(
   action: string,
@@ -2050,7 +2057,8 @@ async function relayCraAction(
   }
   try {
     const route = mapper(target, opts);
-    const res = await fetch(`${GATRA_LOCAL_URL}${route.url}`, {
+    const baseUrl = getGatraLocalUrl();
+    const res = await fetch(`${baseUrl}${route.url}`, {
       method: route.method,
       headers: { 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(5000),
@@ -2274,6 +2282,42 @@ function processCommand(input: string): string | null {
           `  ${p.id}  ${p.action.toUpperCase()} \u2192 ${p.target}  [${p.severity}] ${(p.confidence * 100).toFixed(0)}%`
         ).join('\n') +
         `\n\n/approve <id>  \u00B7  /approve-all  \u00B7  /deny <id>  \u00B7  /deny-all`;
+    },
+    'set-backend': () => {
+      if (!args) return `Current backend: ${getGatraLocalUrl()}\nUsage: /set-backend http://127.0.0.1:8847`;
+      try {
+        const url = args.trim().replace(/\/+$/, '');
+        localStorage.setItem('gatra_local_url', url);
+        return `Backend set to: ${url}\nTest with: /test-backend`;
+      } catch {
+        return 'Failed to save backend URL.';
+      }
+    },
+    'test-backend': () => {
+      const url = getGatraLocalUrl();
+      fetch(`${url}/api/status`, { signal: AbortSignal.timeout(3000) })
+        .then(r => r.json())
+        .then(d => _postSystemMessage(
+          `\u2705 Backend connected: ${url}\n` +
+          `\u2022 Events: ${d.total_events} | Alerts: ${d.total_alerts} | Blocked: ${d.blocked_ips}\n` +
+          `\u2022 Gate pending: ${d.gate_pending}`
+        ))
+        .catch(() => _postSystemMessage(
+          `\u274C Backend unreachable: ${url}\n` +
+          `\u2022 Make sure gatra-local is running: uvicorn ui.dashboard:create_app --factory --port 8847\n` +
+          `\u2022 If using HTTPS, try: /set-backend https://your-tunnel.ngrok.io`
+        ));
+      return `Testing connection to ${url}...`;
+    },
+    'backend': () => {
+      return `Backend: ${getGatraLocalUrl()}\n` +
+        `Commands:\n` +
+        `  /set-backend <url>  \u2014 change backend URL\n` +
+        `  /test-backend       \u2014 test connection\n\n` +
+        `For HTTPS (soc.gatra.ai), use a tunnel:\n` +
+        `  ngrok http 8847\n` +
+        `  Then: /set-backend https://abc123.ngrok.io\n\n` +
+        `For HTTP (localhost:3000), default works directly.`;
     },
     'escalate': () => {
       if (!args) return 'Usage: /escalate <alert-id or technique>\nExamples: /escalate ALR-abc123  \u00B7  /escalate T1059';
