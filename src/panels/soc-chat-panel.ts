@@ -2036,67 +2036,73 @@ interface DetectedIntent {
 
 function detectActionIntent(text: string): DetectedIntent | null {
   const t = text.trim();
+  // Optional polite prefix stripped for matching
+  const stripped = t.replace(/^(?:please\s+|can\s+you\s+|could\s+you\s+|go\s+ahead\s+(?:and\s+)?|I\s+want\s+(?:to\s+)?|we\s+(?:need|should|must)\s+(?:to\s+)?|let'?s\s+|need\s+to\s+)/i, '');
+  let m: RegExpMatchArray | null;
 
   // ── Block / unblock ──
-  let m = t.match(/^(?:please\s+)?(?:can\s+you\s+)?(?:go\s+ahead\s+and\s+)?block\s+(?:ip\s+|address\s+|this\s+ip\s*:?\s*)?(.+)/i);
+  m = stripped.match(/^block\s+(?:ip\s+|address\s+|this\s+ip\s*:?\s*)?(.+)/i);
   if (m) return { command: 'block', target: m[1]!.trim(), original: t };
-  m = t.match(/^(?:please\s+)?unblock\s+(.+)/i);
+  m = stripped.match(/^unblock\s+(.+)/i);
   if (m) return { command: 'unblock', target: m[1]!.trim(), original: t };
 
-  // ── Kill / terminate ──
-  m = t.match(/^(?:please\s+)?(?:kill|terminate|stop)\s+(?:process\s+|pid\s+)?(.+)/i);
+  // ── Contain / quarantine / mitigate / respond → escalate + block ──
+  m = stripped.match(/^(?:contain|quarantin(?:e|ing)|mitigat(?:e|ing)|respond\s+to|take\s+action\s+(?:on|against)|act\s+on|address)\s+(.+)/i);
+  if (m) return { command: 'escalate', target: m[1]!.trim(), original: t };
+
+  // ── Kill / terminate / stop process ──
+  m = stripped.match(/^(?:kill|terminate|stop|end)\s+(?:process\s+|pid\s+)?(.+)/i);
   if (m) return { command: 'kill', target: m[1]!.trim(), original: t };
 
-  // ── Isolate ──
-  m = t.match(/^(?:please\s+)?isolat(?:e|ing)\s+(?:endpoint\s+|host\s+|server\s+|machine\s+)?(.+)/i);
+  // ── Isolate / segment / disconnect ──
+  m = stripped.match(/^(?:isolat(?:e|ing)|segment|disconnect|cut\s+off)\s+(?:endpoint\s+|host\s+|server\s+|machine\s+|node\s+)?(.+)/i);
   if (m) return { command: 'isolate', target: m[1]!.trim(), original: t };
 
-  // ── Escalate ──
-  m = t.match(/^(?:please\s+)?escalat(?:e|ing)\s+(?:alert\s+|all\s+)?(.+)/i);
-  if (m) return { command: 'escalate', target: m[1]!.trim(), original: t };
-  m = t.match(/^(?:please\s+)?(?:raise|bump|upgrade)\s+(?:severity\s+(?:of|for)\s+)?(.+?)(?:\s+to\s+critical)?$/i);
+  // ── Escalate / prioritize / raise ──
+  m = stripped.match(/^(?:escalat(?:e|ing)|prioriti[zs](?:e|ing)|raise|bump|upgrade)\s+(?:alert\s+|all\s+|severity\s+(?:of|for)\s+)?(.+?)(?:\s+to\s+critical)?$/i);
   if (m) return { command: 'escalate', target: m[1]!.trim(), original: t };
 
-  // ── Investigate ──
-  m = t.match(/^(?:please\s+)?investigat(?:e|ing)\s+(.+)/i);
-  if (m) return { command: 'investigate', target: m[1]!.trim(), original: t };
-  m = t.match(/^(?:please\s+)?(?:look into|dig into|check out|examine)\s+(.+)/i);
+  // ── Investigate / look into / dig into / analyze / triage ──
+  m = stripped.match(/^(?:investigat(?:e|ing)|look\s+into|dig\s+into|check\s+out|examine|analy[zs](?:e|ing)|triag(?:e|ing)|review)\s+(.+)/i);
   if (m) return { command: 'investigate', target: m[1]!.trim(), original: t };
 
-  // ── Dismiss ──
-  m = t.match(/^(?:please\s+)?dismiss\s+(.+)/i);
-  if (m) return { command: 'dismiss', target: m[1]!.trim(), original: t };
-  m = t.match(/^(?:please\s+)?(?:close|ignore|suppress)\s+(?:alert\s+)?(.+)/i);
+  // ── Dismiss / close / suppress / ignore / drop ──
+  m = stripped.match(/^(?:dismiss|close|ignore|suppress|drop|clear)\s+(?:alert\s+)?(.+)/i);
   if (m) return { command: 'dismiss', target: m[1]!.trim(), original: t };
 
   // ── False positive ──
-  m = t.match(/^(?:please\s+)?(?:mark|flag|tag)\s+(.+?)\s+(?:as\s+)?(?:false\s*positive|fp|benign|safe)\s*$/i);
+  m = t.match(/(?:mark|flag|tag|set)\s+(.+?)\s+(?:as\s+)?(?:false\s*positive|fp|benign|safe|legitimate|whitelisted?)\s*$/i);
   if (m) return { command: 'fp', target: m[1]!.trim(), original: t };
-  m = t.match(/^(.+?)\s+(?:is\s+(?:a\s+)?)?(?:false\s*positive|fp|benign)\s*$/i);
-  if (m && /^(?:T\d{4}|ALR-)/i.test(m[1]!.trim())) return { command: 'fp', target: m[1]!.trim(), original: t };
+  m = t.match(/^(.+?)\s+(?:is\s+(?:a\s+)?)?(?:false\s*positive|fp|benign|not\s+(?:a\s+)?threat)\s*$/i);
+  if (m && /^(?:T\d{4}|ALR-|CVE-)/i.test(m[1]!.trim())) return { command: 'fp', target: m[1]!.trim(), original: t };
 
-  // ── Approve / deny gate ──
-  m = t.match(/^(?:please\s+)?(?:approve|authorize|execute|confirm|go\s+ahead)\s+(?:all|everything)\s*$/i);
+  // ── Approve / authorize / execute ──
+  m = stripped.match(/^(?:approve|authorize|execute|confirm|accept|permit)\s+(?:all|everything|pending)\s*$/i);
   if (m) return { command: 'approve-all', target: '', original: t };
-  m = t.match(/^(?:please\s+)?(?:approve|authorize|execute|confirm|go\s+ahead)\s+(.+)/i);
+  m = stripped.match(/^(?:approve|authorize|execute|confirm|accept|permit)\s+(.+)/i);
   if (m) return { command: 'approve', target: m[1]!.trim(), original: t };
-  m = t.match(/^(?:please\s+)?(?:deny|reject|cancel|abort)\s+(?:all|everything)\s*$/i);
+  if (/^(?:do\s+it|go\s+ahead|proceed|yes\s+execute|confirmed?|approved?)\s*$/i.test(stripped)) {
+    if (responseGate.getPending().length > 0) return { command: 'approve-all', target: '', original: t };
+  }
+
+  // ── Deny / reject / cancel ──
+  m = stripped.match(/^(?:deny|reject|cancel|abort|revoke|refuse)\s+(?:all|everything|pending)\s*$/i);
   if (m) return { command: 'deny-all', target: '', original: t };
-  m = t.match(/^(?:please\s+)?(?:deny|reject|cancel)\s+(.+)/i);
+  m = stripped.match(/^(?:deny|reject|cancel|abort|revoke|refuse)\s+(.+)/i);
   if (m) return { command: 'deny', target: m[1]!.trim(), original: t };
 
-  // ── Hold / release containment ──
-  m = t.match(/^(?:please\s+)?(?:hold|pause|freeze)\s+(?:containment\s+(?:for|on)\s+)?(.+)/i);
+  // ── Hold / pause / freeze containment ──
+  m = stripped.match(/^(?:hold|pause|freeze|suspend)\s+(?:containment\s+(?:for|on)\s+|response\s+(?:for|on)\s+|action\s+(?:for|on)\s+)?(.+)/i);
   if (m) return { command: 'hold', target: m[1]!.trim(), original: t };
-  m = t.match(/^(?:please\s+)?(?:release|resume|unfreeze)\s+(?:containment\s+(?:for|on)\s+)?(.+)/i);
+  m = stripped.match(/^(?:release|resume|unfreeze|unpause|re-?enable)\s+(?:containment\s+(?:for|on)\s+|response\s+(?:for|on)\s+)?(.+)/i);
   if (m) return { command: 'release', target: m[1]!.trim(), original: t };
 
   // ── Status / pending ──
-  if (/^(?:show\s+)?(?:status|agent\s*status|how\s*are\s*(?:the\s+)?agents)\s*\??$/i.test(t)) return { command: 'status', target: '', original: t };
-  if (/^(?:show\s+)?(?:pending|queue|what.s\s*(?:pending|queued|waiting))\s*\??$/i.test(t)) return { command: 'pending', target: '', original: t };
+  if (/^(?:show\s+)?(?:status|agent\s*status|how\s*are\s*(?:the\s+)?agents|system\s*check)\s*\??$/i.test(stripped)) return { command: 'status', target: '', original: t };
+  if (/^(?:show\s+)?(?:pending|queue|what'?s?\s*(?:pending|queued|waiting|in\s*the\s*queue))\s*\??$/i.test(stripped)) return { command: 'pending', target: '', original: t };
 
   // ── Report ──
-  if (/^(?:generate|create|write|give\s+me)\s+(?:a\s+)?(?:incident\s+)?report/i.test(t)) return { command: 'report', target: '', original: t };
+  if (/^(?:generate|create|write|give\s+me|produce|compile|build)\s+(?:a\s+|an?\s+)?(?:incident\s+)?report/i.test(stripped)) return { command: 'report', target: '', original: t };
 
   return null;
 }
@@ -2272,7 +2278,23 @@ function processCommand(input: string): string | null {
       `  encryption \u00B7 threat modeling \u00B7 supply chain \u00B7 SIEM`,
   };
 
-  const handler = handlers[cmd];
+  // Command aliases — map common SOC verbs to canonical commands
+  const aliases: Record<string, string> = {
+    contain: 'escalate', quarantine: 'isolate', mitigate: 'escalate',
+    respond: 'escalate', triage: 'investigate', analyze: 'investigate',
+    review: 'investigate', examine: 'investigate', suppress: 'dismiss',
+    close: 'dismiss', ignore: 'dismiss', drop: 'dismiss', clear: 'dismiss',
+    terminate: 'kill', stop: 'kill', end: 'kill',
+    segment: 'isolate', disconnect: 'isolate',
+    authorize: 'approve', accept: 'approve', permit: 'approve', confirm: 'approve',
+    reject: 'deny', cancel: 'deny', abort: 'deny', revoke: 'deny',
+    pause: 'hold', freeze: 'hold', suspend: 'hold',
+    resume: 'release', unpause: 'release', unfreeze: 'release',
+    prioritize: 'escalate', raise: 'escalate', bump: 'escalate', upgrade: 'escalate',
+  };
+
+  const resolved = aliases[cmd] ?? cmd;
+  const handler = handlers[resolved];
   return handler ? handler() : `Unknown command: /${cmd}. Type /help for list.`;
 }
 
