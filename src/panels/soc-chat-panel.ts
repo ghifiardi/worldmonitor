@@ -2247,6 +2247,32 @@ function processCommand(input: string): string | null {
   return handler ? handler() : `Unknown command: /${cmd}. Type /help for list.`;
 }
 
+// ── LLM action heuristic (should we call Groq?) ─────────────────
+// Returns true if the message MIGHT be an action but regex didn't catch it.
+// Conservative — avoids calling LLM for pure questions or greetings.
+
+function looksLikeAction(text: string): boolean {
+  const t = text.toLowerCase();
+  // Skip short messages, pure questions, greetings
+  if (t.length < 8) return false;
+  if (/^(hi|hello|hey|thanks|ok|yes|no|sure)\b/i.test(t)) return false;
+  // Skip messages that are clearly questions about concepts (not actions)
+  if (/^(what\s+is|what\s+are|how\s+does|how\s+do|explain|define|tell\s+me\s+about)\s+(?!.*(?:block|kill|isolat|escalat|dismiss|investigat|approv|deny|hold|releas))/i.test(t)) return false;
+
+  // Likely action signals: imperative verbs, references to prior context, targets
+  const actionSignals = [
+    /\b(do|handle|fix|stop|shut|take\s+care|deal\s+with|get\s+rid|remove|contain|respond|mitigat|remov)\b/i,
+    /\b(that|those|these|the\s+last|same|it|them|this\s+one|previous|above)\b.*\b(block|kill|isolat|escalat|dismiss|investigat|approv|deny|close|suppress|mark)\b/i,
+    /\b(block|kill|isolat|escalat|dismiss|investigat|approv|deny|close|suppress|mark)\b.*\b(that|those|these|the\s+last|same|it|them|this\s+one|previous|above)\b/i,
+    /\b(go\s+ahead|proceed|execute|do\s+it|make\s+it|run\s+it)\b/i,
+    /\b(all\s+critical|all\s+high|everything|the\s+rest)\b/i,
+    /\b(lateral\s+movement|powershell|credential|exfiltrat|brute\s*force|phishing|ransomware)\b.*\b(block|escalat|investigat|dismiss|contain)\b/i,
+    /\b(block|escalat|investigat|dismiss|contain)\b.*\b(lateral\s+movement|powershell|credential|exfiltrat|brute\s*force|phishing|ransomware)\b/i,
+  ];
+
+  return actionSignals.some(re => re.test(t));
+}
+
 // ── CSS ──────────────────────────────────────────────────────────
 
 let cssInjected = false;
@@ -2691,7 +2717,7 @@ export class SocChatPanel {
       return;
     }
 
-    // ── Natural language action detection ──
+    // ── Natural language action detection (regex first, LLM fallback) ──
     const intent = detectActionIntent(text);
     if (intent) {
       this.addMessage({
@@ -2708,6 +2734,16 @@ export class SocChatPanel {
         });
         return;
       }
+    }
+
+    // ── LLM fallback for ambiguous action messages ──
+    if (!intent && looksLikeAction(text)) {
+      this.addMessage({
+        id: uid(), timestamp: Date.now(), sender: this.analystSender,
+        type: 'text', content: text,
+      });
+      this.classifyWithLLM(text);
+      return;
     }
 
     // Regular message
@@ -2950,6 +2986,64 @@ export class SocChatPanel {
       }, 1200 + Math.random() * 800);
 
       this.typingTimers.set(socSender.id, timer);
+    }
+  }
+
+  // ── LLM-based intent classification (Groq fallback) ─────────
+
+  private async classifyWithLLM(text: string): Promise<void> {
+    // Show thinking indicator
+    const thinkId = 'soc-llm-thinking';
+    const thinkEl = document.createElement('div');
+    thinkEl.className = 'soc-typing';
+    thinkEl.id = thinkId;
+    thinkEl.innerHTML = `<span style="color:#f59e0b;">GATRA</span> <span class="soc-typing-dots"><span></span><span></span><span></span></span>`;
+    this.msgsEl.prepend(thinkEl);
+
+    try {
+      // Build context from recent alerts and pending gate actions
+      const recentAlerts = getAlerts().slice(0, 5).map(a => `${a.id} ${a.mitreId} ${a.mitreName} [${a.severity}]`);
+      const pending = responseGate.getPending().map(p => `${p.id} ${p.action} ${p.target}`);
+
+      const res = await fetch('/api/soc-intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          context: { alerts: recentAlerts, pending },
+        }),
+      });
+
+      document.getElementById(thinkId)?.remove();
+
+      if (!res.ok) {
+        // LLM failed — fall through to agent routing
+        this.routeToAgents(text);
+        return;
+      }
+
+      const data = await res.json();
+
+      // Only act if confidence is high enough
+      if (data.command && data.confidence >= 0.7) {
+        const cmdText = data.target ? `/${data.command} ${data.target}` : `/${data.command}`;
+        const result = processCommand(cmdText);
+        if (result) {
+          this.addMessage({
+            id: uid(), timestamp: Date.now(),
+            sender: { id: 'system', name: 'SYSTEM', type: 'system', color: '#888' },
+            type: 'command_response', content: result,
+          });
+          return;
+        }
+      }
+
+      // LLM didn't find an action — route to agents as normal
+      this.routeToAgents(text);
+    } catch {
+      document.getElementById(thinkId)?.remove();
+      // Network error — fall through to agents
+      this.routeToAgents(text);
     }
   }
 
