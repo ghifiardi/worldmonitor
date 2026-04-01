@@ -1806,6 +1806,111 @@ function generateGeneralCyberResponse(message: string): string | null {
   return null; // Not a cybersecurity topic we can handle
 }
 
+// ── Response Gate (trust-gated response execution) ──────────────
+
+interface GateRequest {
+  id: string;
+  action: string;
+  target: string;
+  severity: string;
+  confidence: number;
+  reason: string;
+  timestamp: number;
+}
+
+interface GateDecisionLocal {
+  requestId: string;
+  action: string;
+  allowed: boolean;
+  reason: string;
+}
+
+/** In-browser response gate mirroring the Python ResponseGate logic.
+ *  Destructive actions (block, kill) are held for analyst /approve. */
+class ResponseGateClient {
+  private pending = new Map<string, GateRequest>();
+  private autoBlockEnabled = false;
+  private autoBlockMinSeverity = 4; // CRITICAL
+  private autoKillEnabled = false;
+
+  private static SEV_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
+
+  evaluate(req: GateRequest): GateDecisionLocal {
+    const sev = ResponseGateClient.SEV_RANK[req.severity.toLowerCase()] ?? 1;
+
+    // Safe / reversal actions — always allowed
+    if (['notify', 'unblock', 'resume'].some(s => req.action.includes(s))) {
+      return { requestId: req.id, action: req.action, allowed: true, reason: `AUTO-APPROVED: safe action '${req.action}'` };
+    }
+
+    // Suspend — reversible, moderate threshold
+    if (req.action === 'suspend') {
+      if (sev >= 3 && req.confidence >= 0.80) {
+        return { requestId: req.id, action: req.action, allowed: true, reason: `AUTO-APPROVED: severity ${req.severity} + confidence ${req.confidence.toFixed(2)}` };
+      }
+      this.pending.set(req.id, req);
+      return { requestId: req.id, action: req.action, allowed: false, reason: `PENDING APPROVAL: below auto-suspend threshold` };
+    }
+
+    // Block IP
+    if (req.action === 'block') {
+      if (this.autoBlockEnabled && sev >= this.autoBlockMinSeverity && req.confidence >= 0.90) {
+        return { requestId: req.id, action: req.action, allowed: true, reason: `AUTO-APPROVED: auto-block policy met` };
+      }
+      this.pending.set(req.id, req);
+      return { requestId: req.id, action: req.action, allowed: false, reason: this.autoBlockEnabled ? `PENDING: severity/confidence below threshold` : `PENDING: auto-block disabled — analyst approval required` };
+    }
+
+    // Kill process — most destructive
+    if (req.action === 'kill') {
+      if (this.autoKillEnabled && sev >= 4 && req.confidence >= 0.95) {
+        return { requestId: req.id, action: req.action, allowed: true, reason: `AUTO-APPROVED: auto-kill policy met` };
+      }
+      this.pending.set(req.id, req);
+      return { requestId: req.id, action: req.action, allowed: false, reason: `PENDING: process kill requires analyst approval` };
+    }
+
+    // Isolate endpoint
+    if (req.action === 'isolate') {
+      this.pending.set(req.id, req);
+      return { requestId: req.id, action: req.action, allowed: false, reason: `PENDING: endpoint isolation requires analyst approval` };
+    }
+
+    // Unknown — hold
+    this.pending.set(req.id, req);
+    return { requestId: req.id, action: req.action, allowed: false, reason: `PENDING: unknown action '${req.action}' requires approval` };
+  }
+
+  getPending(): GateRequest[] { return [...this.pending.values()]; }
+
+  approve(requestId: string): GateRequest | null {
+    const req = this.pending.get(requestId);
+    if (!req) return null;
+    this.pending.delete(requestId);
+    return req;
+  }
+
+  approveAll(): GateRequest[] {
+    const all = [...this.pending.values()];
+    this.pending.clear();
+    return all;
+  }
+
+  deny(requestId: string): boolean {
+    return this.pending.delete(requestId);
+  }
+
+  denyAll(): number {
+    const count = this.pending.size;
+    this.pending.clear();
+    return count;
+  }
+}
+
+const responseGate = new ResponseGateClient();
+let gateIdCounter = 0;
+function gateId(): string { return `GATE-${Date.now()}-${++gateIdCounter}`; }
+
 // ── Slash commands ────────────────────────────────────────────────
 
 function processCommand(input: string): string | null {
@@ -1817,10 +1922,75 @@ function processCommand(input: string): string | null {
   const actions = getCRAActions();
 
   const handlers: Record<string, () => string> = {
-    'block': () => `CRA: Blocking ${args || '<target>'}. Firewall rule deploying.`,
-    'unblock': () => `CRA: Unblocking ${args || '<target>'}. Rule removed.`,
+    'block': () => {
+      const target = args || '<target>';
+      const req: GateRequest = { id: gateId(), action: 'block', target, severity: 'high', confidence: 0.85, reason: `Analyst /block command`, timestamp: Date.now() };
+      const decision = responseGate.evaluate(req);
+      if (decision.allowed) return `CRA: \u2705 Blocking ${target}. Firewall rule deploying.\n(${decision.reason})`;
+      return `CRA: \u23F3 Block ${target} HELD for approval.\n${decision.reason}\nType /approve ${req.id} or /approve-all to execute.`;
+    },
+    'unblock': () => `CRA: \u2705 Unblocking ${args || '<target>'}. Rule removed.`,
     'hold': () => `CRA: Containment held for ${args || '<target>'}. Manual approval required.`,
     'release': () => `CRA: Hold released for ${args || '<target>'}. Automatic response resumed.`,
+    'isolate': () => {
+      const target = args || '<endpoint>';
+      const req: GateRequest = { id: gateId(), action: 'isolate', target, severity: 'critical', confidence: 0.90, reason: `Analyst /isolate command`, timestamp: Date.now() };
+      const decision = responseGate.evaluate(req);
+      if (decision.allowed) return `CRA: \u2705 Isolating endpoint ${target}.\n(${decision.reason})`;
+      return `CRA: \u23F3 Isolate ${target} HELD for approval.\n${decision.reason}\nType /approve ${req.id} or /approve-all to execute.`;
+    },
+    'kill': () => {
+      const target = args || '<pid>';
+      const req: GateRequest = { id: gateId(), action: 'kill', target, severity: 'critical', confidence: 0.90, reason: `Analyst /kill command`, timestamp: Date.now() };
+      const decision = responseGate.evaluate(req);
+      if (decision.allowed) return `CRA: \u2705 Terminating process ${target}.\n(${decision.reason})`;
+      return `CRA: \u23F3 Kill PID ${target} HELD for approval.\n${decision.reason}\nType /approve ${req.id} or /approve-all to execute.`;
+    },
+    'approve': () => {
+      if (!args) {
+        const pending = responseGate.getPending();
+        if (pending.length === 0) return 'GATE: No pending actions to approve.';
+        return `GATE: ${pending.length} pending action(s):\n` +
+          pending.map(p => `  ${p.id} \u2014 ${p.action} ${p.target} [${p.severity}]`).join('\n') +
+          `\n\nType /approve <id> or /approve-all`;
+      }
+      const approved = responseGate.approve(args);
+      if (!approved) return `GATE: Request ${args} not found in pending queue.`;
+      return `CRA: \u2705 APPROVED \u2014 executing ${approved.action} on ${approved.target}.\nAction authorized by analyst at ${new Date().toISOString().slice(11, 19)}Z.`;
+    },
+    'approve-all': () => {
+      const approved = responseGate.approveAll();
+      if (approved.length === 0) return 'GATE: No pending actions to approve.';
+      return `CRA: \u2705 APPROVED ALL \u2014 ${approved.length} action(s) executing:\n` +
+        approved.map(p => `  \u2022 ${p.action} ${p.target}`).join('\n') +
+        `\nAuthorized by analyst at ${new Date().toISOString().slice(11, 19)}Z.`;
+    },
+    'deny': () => {
+      if (!args) return 'Usage: /deny <request-id> or /deny-all';
+      const denied = responseGate.deny(args);
+      if (!denied) return `GATE: Request ${args} not found in pending queue.`;
+      return `GATE: \u274C DENIED \u2014 ${args} will not be executed.`;
+    },
+    'deny-all': () => {
+      const count = responseGate.denyAll();
+      if (count === 0) return 'GATE: No pending actions to deny.';
+      return `GATE: \u274C DENIED ALL \u2014 ${count} action(s) cancelled.`;
+    },
+    'pending': () => {
+      const pending = responseGate.getPending();
+      if (pending.length === 0) return 'GATE: No pending response actions. All clear.';
+      return `GATE: ${pending.length} pending action(s) awaiting approval:\n` +
+        `${'━'.repeat(40)}\n` +
+        pending.map(p =>
+          `  ${p.id}\n` +
+          `  Action: ${p.action.toUpperCase()} \u2192 ${p.target}\n` +
+          `  Severity: ${p.severity.toUpperCase()} \u2022 Confidence: ${(p.confidence * 100).toFixed(0)}%\n` +
+          `  Reason: ${p.reason}\n` +
+          `  Queued: ${new Date(p.timestamp).toISOString().slice(11, 19)}Z`
+        ).join('\n\n') +
+        `\n${'━'.repeat(40)}\n` +
+        `/approve <id> \u00B7 /approve-all \u00B7 /deny <id> \u00B7 /deny-all`;
+    },
     'escalate': () => `TAA: Alert ${args || '<id>'} manually escalated to CRITICAL.`,
     'dismiss': () => `TAA: Alert ${args || '<id>'} dismissed by analyst. Logged.`,
     'investigate': () => `TAA: Alert ${args || '<id>'} moved to INVESTIGATE queue.`,
@@ -1828,14 +1998,25 @@ function processCommand(input: string): string | null {
     'report': () => `CLA: Generating incident report... ${alerts.length} alerts, ${actions.length} actions.`,
     'status': () => {
       const agentStatuses = getAgentStatus();
-      if (agentStatuses.length === 0) return 'All 5 GATRA agents online: ADA, TAA, CRA, CLA, RVA.';
-      return agentStatuses.map(a => `${a.name}: ${a.status}`).join(' | ');
+      const pendingCount = responseGate.getPending().length;
+      const base = agentStatuses.length === 0
+        ? 'All 5 GATRA agents online: ADA, TAA, CRA, CLA, RVA.'
+        : agentStatuses.map(a => `${a.name}: ${a.status}`).join(' | ');
+      return pendingCount > 0
+        ? `${base}\n\u26A0\uFE0F ${pendingCount} response action(s) pending approval. Type /pending to review.`
+        : base;
     },
     'help': () =>
       `Available commands:\n` +
-      `/block <ip> \u00B7 /unblock <ip> \u00B7 /hold <target> \u00B7 /release <target>\n` +
+      `/block <ip> \u00B7 /unblock <ip> \u00B7 /isolate <endpoint> \u00B7 /kill <pid>\n` +
+      `/hold <target> \u00B7 /release <target>\n` +
+      `/approve [id] \u00B7 /approve-all \u00B7 /deny <id> \u00B7 /deny-all \u00B7 /pending\n` +
       `/escalate <alert> \u00B7 /dismiss <alert> \u00B7 /investigate <alert>\n` +
       `/fp <alert> \u00B7 /report \u00B7 /status \u00B7 /help\n\n` +
+      `Response Gate:\n` +
+      `  Destructive actions (block, isolate, kill) require analyst approval.\n` +
+      `  Safe actions (notify, unblock, resume) execute immediately.\n` +
+      `  Use /pending to see queued actions, /approve-all to execute.\n\n` +
       `Playbooks:\n` +
       `/playbooks \u2014 list available playbooks\n` +
       `/hunt <name> \u2014 start a threat hunt playbook\n` +
