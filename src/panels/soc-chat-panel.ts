@@ -2188,6 +2188,63 @@ function resolveAlertTarget(target: string, alerts: GatraAlert[]): GatraAlert[] 
   );
 }
 
+// ── Backend approve helpers ─────────────────────────────────────
+
+async function approveOnBackend(action: string, target: string): Promise<void> {
+  const baseUrl = getGatraLocalUrl();
+  try {
+    // First try to approve on the backend gate (which holds actions from relay)
+    const pendingRes = await fetch(`${baseUrl}/api/gate/pending`, {
+      headers: { 'ngrok-skip-browser-warning': '1' },
+      signal: AbortSignal.timeout(3000),
+    });
+    const pending = await pendingRes.json();
+    // Find matching pending action on backend
+    const match = (pending as Array<{ id: string; action: string; target: string }>)
+      .find(p => p.target === target || p.action.includes(action));
+    if (match) {
+      const res = await fetch(`${baseUrl}/api/gate/approve/${match.id}?approved_by=analyst`, {
+        method: 'POST',
+        headers: { 'ngrok-skip-browser-warning': '1' },
+        signal: AbortSignal.timeout(5000),
+      });
+      const data = await res.json();
+      _postSystemMessage(data.approved
+        ? `\u2705 Backend: ${action} ${target} executed.`
+        : `\u26A0\uFE0F Backend: ${data.error || 'approval failed'}`);
+    } else {
+      // No matching pending — send direct action
+      const result = await relayCraAction(action, target);
+      _postSystemMessage(result.backend
+        ? (result.success ? `\u2705 Backend: ${action} ${target} executed.` : `\u26A0\uFE0F Backend: ${result.detail}`)
+        : `\u26A0\uFE0F ${result.detail}`);
+    }
+  } catch {
+    _postSystemMessage(`\u26A0\uFE0F Backend unreachable. Action simulated only.`);
+  }
+}
+
+async function approveAllOnBackend(): Promise<void> {
+  const baseUrl = getGatraLocalUrl();
+  try {
+    const res = await fetch(`${baseUrl}/api/gate/approve-all?approved_by=analyst`, {
+      method: 'POST',
+      headers: { 'ngrok-skip-browser-warning': '1' },
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = await res.json();
+    if (data.approved_count > 0) {
+      const results = (data.results as Array<{ action: string; target: string; success: boolean }>);
+      const lines = results.map(r => `  ${r.success ? '\u2705' : '\u26A0\uFE0F'} ${r.action} ${r.target}`);
+      _postSystemMessage(`Backend executed ${data.approved_count} action(s):\n${lines.join('\n')}`);
+    } else {
+      _postSystemMessage(`\u2705 Backend: no pending actions to approve.`);
+    }
+  } catch {
+    _postSystemMessage(`\u26A0\uFE0F Backend unreachable. Actions simulated only.`);
+  }
+}
+
 // ── System message callback (set by SocChatPanel on construction) ──
 let _postSystemMessage: (text: string) => void = () => {};
 
@@ -2236,29 +2293,15 @@ function processCommand(input: string): string | null {
       }
       const approved = responseGate.approve(args);
       if (!approved) return `"${args}" not found. Type /pending to see queue.`;
-      // Fire backend relay async
-      relayCraAction(approved.action, approved.target, {
-        reason: approved.reason, severity: approved.severity, confidence: approved.confidence,
-      }).then(r => {
-        _postSystemMessage(r.backend
-          ? (r.success ? `\u2705 Backend: ${approved.action} ${approved.target} executed.` : `\u26A0\uFE0F Backend: ${r.detail}`)
-          : `\u26A0\uFE0F ${r.detail}`);
-      });
+      // Approve on backend gate too, then execute
+      approveOnBackend(approved.action, approved.target);
       return `CRA: \u2705 Approved \u2014 ${approved.action} ${approved.target} sending to backend...`;
     },
     'approve-all': () => {
       const approved = responseGate.approveAll();
       if (approved.length === 0) return 'No pending actions.';
-      // Fire backend relay for each action
-      for (const p of approved) {
-        relayCraAction(p.action, p.target, {
-          reason: p.reason, severity: p.severity, confidence: p.confidence,
-        }).then(r => {
-          _postSystemMessage(r.backend
-            ? (r.success ? `\u2705 Backend: ${p.action} ${p.target} executed.` : `\u26A0\uFE0F Backend: ${r.detail}`)
-            : `\u26A0\uFE0F ${r.detail}`);
-        });
-      }
+      // Approve all on backend
+      approveAllOnBackend();
       return `CRA: \u2705 Approved ${approved.length} action(s):\n` +
         approved.map(p => `  \u2022 ${p.action} ${p.target}`).join('\n') +
         `\nSending to backend...`;
