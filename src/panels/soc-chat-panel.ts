@@ -2263,16 +2263,23 @@ function processCommand(input: string): string | null {
       const target = args || '<target>';
       const req: GateRequest = { id: gateId(), action: 'block', target, severity: 'high', confidence: 0.85, reason: 'Analyst /block command', timestamp: Date.now() };
       const decision = responseGate.evaluate(req);
+      // Send to backend gate too (so approve-all can approve it there)
+      relayCraAction('block', target, { reason: 'Analyst /block command', severity: 'high', confidence: 0.85 });
       if (decision.allowed) return `CRA: \u2705 Blocking ${target}. Firewall rule deploying.`;
       return `CRA: \u23F3 Block ${target} held for approval.\n\u2022 Reason: auto-block disabled\n\u2022 /approve ${req.id}  or  /approve-all`;
     },
-    'unblock': () => `CRA: \u2705 Unblocking ${args || '<target>'}. Rule removed.`,
+    'unblock': () => {
+      const target = args || '<target>';
+      relayCraAction('unblock', target);
+      return `CRA: \u2705 Unblocking ${target}. Rule removed.`;
+    },
     'hold': () => `CRA: Containment held for ${args || '<target>'}. Manual approval required.`,
     'release': () => `CRA: Hold released for ${args || '<target>'}. Automatic response resumed.`,
     'isolate': () => {
       const target = args || '<endpoint>';
       const req: GateRequest = { id: gateId(), action: 'isolate', target, severity: 'critical', confidence: 0.90, reason: 'Analyst /isolate command', timestamp: Date.now() };
       const decision = responseGate.evaluate(req);
+      relayCraAction('isolate', target, { reason: 'Analyst /isolate command', severity: 'critical', confidence: 0.90 });
       if (decision.allowed) return `CRA: \u2705 Isolating endpoint ${target}.`;
       return `CRA: \u23F3 Isolate ${target} held for approval.\n\u2022 Reason: endpoint isolation requires confirmation\n\u2022 /approve ${req.id}  or  /approve-all`;
     },
@@ -2280,6 +2287,7 @@ function processCommand(input: string): string | null {
       const target = args || '<pid>';
       const req: GateRequest = { id: gateId(), action: 'kill', target, severity: 'critical', confidence: 0.90, reason: 'Analyst /kill command', timestamp: Date.now() };
       const decision = responseGate.evaluate(req);
+      relayCraAction('kill', target, { reason: 'Analyst /kill command', severity: 'critical', confidence: 0.90 });
       if (decision.allowed) return `CRA: \u2705 Terminating process ${target}.`;
       return `CRA: \u23F3 Kill PID ${target} held for approval.\n\u2022 Reason: process kill requires confirmation\n\u2022 /approve ${req.id}  or  /approve-all`;
     },
