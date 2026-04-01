@@ -2026,33 +2026,42 @@ function gateId(): string { return `G${(++gateIdCounter).toString().padStart(3, 
 
 // ── Backend relay — sends approved actions to gatra-local via /api/gatra-cra ──
 
+// Map action names to gatra-local API endpoints
+const CRA_ENDPOINT_MAP: Record<string, (target: string, opts: Record<string, unknown>) => { url: string; method: string }> = {
+  block: (t, o) => ({ url: `/api/cra/block?ip=${encodeURIComponent(t)}&reason=${encodeURIComponent(String(o.reason || 'SOC analyst'))}&severity=${encodeURIComponent(String(o.severity || 'high'))}&confidence=${o.confidence || 0.85}`, method: 'POST' }),
+  unblock: (t) => ({ url: `/api/cra/unblock?ip=${encodeURIComponent(t)}`, method: 'POST' }),
+  kill: (t, o) => ({ url: `/api/cra/kill?pid=${encodeURIComponent(t)}&reason=${encodeURIComponent(String(o.reason || 'SOC analyst'))}&severity=critical`, method: 'POST' }),
+  suspend: (t) => ({ url: `/api/cra/suspend?pid=${encodeURIComponent(t)}`, method: 'POST' }),
+  resume: (t) => ({ url: `/api/cra/resume?pid=${encodeURIComponent(t)}`, method: 'POST' }),
+  isolate: (t, o) => ({ url: `/api/cra/block?ip=${encodeURIComponent(t)}&reason=${encodeURIComponent('endpoint isolation: ' + String(o.reason || ''))}&severity=critical&confidence=0.95`, method: 'POST' }),
+};
+
+// gatra-local URL — try localhost (same machine as analyst)
+const GATRA_LOCAL_URL = 'http://127.0.0.1:8847';
+
 async function relayCraAction(
   action: string,
   target: string,
   opts: { reason?: string; severity?: string; confidence?: number } = {},
 ): Promise<{ success: boolean; detail: string; backend: boolean }> {
+  const mapper = CRA_ENDPOINT_MAP[action];
+  if (!mapper) {
+    return { success: false, detail: `No backend mapping for action '${action}'`, backend: false };
+  }
   try {
-    const res = await fetch('/api/gatra-cra', {
-      method: 'POST',
+    const route = mapper(target, opts);
+    const res = await fetch(`${GATRA_LOCAL_URL}${route.url}`, {
+      method: route.method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action,
-        target,
-        reason: opts.reason || 'SOC analyst command',
-        severity: opts.severity || 'high',
-        confidence: opts.confidence || 0.85,
-      }),
+      signal: AbortSignal.timeout(5000),
     });
     const data = await res.json();
-    if (data.error === 'gatra-local not reachable') {
-      return { success: false, detail: 'gatra-local not running (simulated only)', backend: false };
-    }
     if (data.executed === false && data.gate_id) {
       return { success: true, detail: `Backend gate held: ${data.reason}`, backend: true };
     }
     return {
       success: data.success !== false,
-      detail: data.executed ? 'Executed on backend' : (data.error || 'Unknown'),
+      detail: data.executed ? `Executed on backend (${action} ${target})` : (data.error || 'Held by backend gate'),
       backend: true,
     };
   } catch {
@@ -2113,7 +2122,7 @@ function detectActionIntent(text: string): DetectedIntent | null {
   if (m && /^(?:T\d{4}|ALR-|CVE-)/i.test(m[1]!.trim())) return { command: 'fp', target: m[1]!.trim(), original: t };
 
   // ── Approve / authorize / execute ──
-  if (/^approve[\s-]?all\s*$/i.test(stripped)) return { command: 'approve-all', target: '', original: t };
+  if (/^app?r?o?ve?[\s-]?all\s*$/i.test(stripped)) return { command: 'approve-all', target: '', original: t };
   m = stripped.match(/^(?:approve|authorize|execute|confirm|accept|permit)\s+(?:all|everything|pending)\s*$/i);
   if (m) return { command: 'approve-all', target: '', original: t };
   m = stripped.match(/^(?:approve|authorize|execute|confirm|accept|permit)\s+(.+)/i);
