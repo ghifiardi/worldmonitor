@@ -2264,7 +2264,8 @@ function processCommand(input: string): string | null {
       const req: GateRequest = { id: gateId(), action: 'block', target, severity: 'high', confidence: 0.85, reason: 'Analyst /block command', timestamp: Date.now() };
       const decision = responseGate.evaluate(req);
       // Send to backend gate too (so approve-all can approve it there)
-      relayCraAction('block', target, { reason: 'Analyst /block command', severity: 'high', confidence: 0.85 });
+      relayCraAction('block', target, { reason: 'Analyst /block command', severity: 'high', confidence: 0.85 })
+        .then(r => { if (r.backend) _postSystemMessage(`\u2705 Backend gate: ${r.detail}`); });
       if (decision.allowed) return `CRA: \u2705 Blocking ${target}. Firewall rule deploying.`;
       return `CRA: \u23F3 Block ${target} held for approval.\n\u2022 Reason: auto-block disabled\n\u2022 /approve ${req.id}  or  /approve-all`;
     },
@@ -2826,8 +2827,18 @@ export class SocChatPanel {
     // Register system message callback for async backend relay responses
     _postSystemMessage = (text: string) => this.addSystemMessage(text);
 
-    // Welcome message
-    this.addSystemMessage('SOC COMMS initialized. 5 GATRA agents online. Type /help for commands.');
+    // Welcome message + backend status
+    const backendUrl = getGatraLocalUrl();
+    const isDefault = backendUrl === 'http://127.0.0.1:8847';
+    this.addSystemMessage(
+      `SOC COMMS initialized. 5 GATRA agents online. Type /help for commands.` +
+      (isDefault ? '' : `\nBackend: ${backendUrl}`)
+    );
+    // Auto-test backend on startup
+    fetch(`${backendUrl}/api/status`, { headers: { 'ngrok-skip-browser-warning': '1' }, signal: AbortSignal.timeout(3000) })
+      .then(r => r.json())
+      .then(d => this.addSystemMessage(`\u2705 Backend connected: ${d.total_alerts} alerts, ${d.blocked_ips} blocked IPs`))
+      .catch(() => {});
 
     // Bind PlaybookEngine callbacks
     this.playbookEngine.bind(
