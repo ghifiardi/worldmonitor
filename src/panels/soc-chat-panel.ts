@@ -1995,6 +1995,83 @@ const responseGate = new ResponseGateClient();
 let gateIdCounter = 0;
 function gateId(): string { return `G${(++gateIdCounter).toString().padStart(3, '0')}`; }
 
+// ── Natural language intent detection ────────────────────────────
+// Converts "escalate T1059", "block 10.0.0.1", etc. into slash commands
+// so analysts don't need to remember / syntax.
+
+interface DetectedIntent {
+  command: string;   // the slash command equivalent
+  target: string;    // extracted target (IP, technique, etc.)
+  original: string;  // what the user typed
+}
+
+function detectActionIntent(text: string): DetectedIntent | null {
+  const t = text.trim();
+
+  // ── Block / unblock ──
+  let m = t.match(/^(?:please\s+)?(?:can\s+you\s+)?(?:go\s+ahead\s+and\s+)?block\s+(?:ip\s+|address\s+|this\s+ip\s*:?\s*)?(.+)/i);
+  if (m) return { command: 'block', target: m[1]!.trim(), original: t };
+  m = t.match(/^(?:please\s+)?unblock\s+(.+)/i);
+  if (m) return { command: 'unblock', target: m[1]!.trim(), original: t };
+
+  // ── Kill / terminate ──
+  m = t.match(/^(?:please\s+)?(?:kill|terminate|stop)\s+(?:process\s+|pid\s+)?(.+)/i);
+  if (m) return { command: 'kill', target: m[1]!.trim(), original: t };
+
+  // ── Isolate ──
+  m = t.match(/^(?:please\s+)?isolat(?:e|ing)\s+(?:endpoint\s+|host\s+|server\s+|machine\s+)?(.+)/i);
+  if (m) return { command: 'isolate', target: m[1]!.trim(), original: t };
+
+  // ── Escalate ──
+  m = t.match(/^(?:please\s+)?escalat(?:e|ing)\s+(?:alert\s+|all\s+)?(.+)/i);
+  if (m) return { command: 'escalate', target: m[1]!.trim(), original: t };
+  m = t.match(/^(?:please\s+)?(?:raise|bump|upgrade)\s+(?:severity\s+(?:of|for)\s+)?(.+?)(?:\s+to\s+critical)?$/i);
+  if (m) return { command: 'escalate', target: m[1]!.trim(), original: t };
+
+  // ── Investigate ──
+  m = t.match(/^(?:please\s+)?investigat(?:e|ing)\s+(.+)/i);
+  if (m) return { command: 'investigate', target: m[1]!.trim(), original: t };
+  m = t.match(/^(?:please\s+)?(?:look into|dig into|check out|examine)\s+(.+)/i);
+  if (m) return { command: 'investigate', target: m[1]!.trim(), original: t };
+
+  // ── Dismiss ──
+  m = t.match(/^(?:please\s+)?dismiss\s+(.+)/i);
+  if (m) return { command: 'dismiss', target: m[1]!.trim(), original: t };
+  m = t.match(/^(?:please\s+)?(?:close|ignore|suppress)\s+(?:alert\s+)?(.+)/i);
+  if (m) return { command: 'dismiss', target: m[1]!.trim(), original: t };
+
+  // ── False positive ──
+  m = t.match(/^(?:please\s+)?(?:mark|flag|tag)\s+(.+?)\s+(?:as\s+)?(?:false\s*positive|fp|benign|safe)\s*$/i);
+  if (m) return { command: 'fp', target: m[1]!.trim(), original: t };
+  m = t.match(/^(.+?)\s+(?:is\s+(?:a\s+)?)?(?:false\s*positive|fp|benign)\s*$/i);
+  if (m && /^(?:T\d{4}|ALR-)/i.test(m[1]!.trim())) return { command: 'fp', target: m[1]!.trim(), original: t };
+
+  // ── Approve / deny gate ──
+  m = t.match(/^(?:please\s+)?(?:approve|authorize|execute|confirm|go\s+ahead)\s+(?:all|everything)\s*$/i);
+  if (m) return { command: 'approve-all', target: '', original: t };
+  m = t.match(/^(?:please\s+)?(?:approve|authorize|execute|confirm|go\s+ahead)\s+(.+)/i);
+  if (m) return { command: 'approve', target: m[1]!.trim(), original: t };
+  m = t.match(/^(?:please\s+)?(?:deny|reject|cancel|abort)\s+(?:all|everything)\s*$/i);
+  if (m) return { command: 'deny-all', target: '', original: t };
+  m = t.match(/^(?:please\s+)?(?:deny|reject|cancel)\s+(.+)/i);
+  if (m) return { command: 'deny', target: m[1]!.trim(), original: t };
+
+  // ── Hold / release containment ──
+  m = t.match(/^(?:please\s+)?(?:hold|pause|freeze)\s+(?:containment\s+(?:for|on)\s+)?(.+)/i);
+  if (m) return { command: 'hold', target: m[1]!.trim(), original: t };
+  m = t.match(/^(?:please\s+)?(?:release|resume|unfreeze)\s+(?:containment\s+(?:for|on)\s+)?(.+)/i);
+  if (m) return { command: 'release', target: m[1]!.trim(), original: t };
+
+  // ── Status / pending ──
+  if (/^(?:show\s+)?(?:status|agent\s*status|how\s*are\s*(?:the\s+)?agents)\s*\??$/i.test(t)) return { command: 'status', target: '', original: t };
+  if (/^(?:show\s+)?(?:pending|queue|what.s\s*(?:pending|queued|waiting))\s*\??$/i.test(t)) return { command: 'pending', target: '', original: t };
+
+  // ── Report ──
+  if (/^(?:generate|create|write|give\s+me)\s+(?:a\s+)?(?:incident\s+)?report/i.test(t)) return { command: 'report', target: '', original: t };
+
+  return null;
+}
+
 // ── Alert target resolution (accepts alert ID, technique ID, or severity) ──
 
 function resolveAlertTarget(target: string, alerts: GatraAlert[]): GatraAlert[] {
@@ -2612,6 +2689,25 @@ export class SocChatPanel {
         type: 'command_response', content: cmdResponse,
       });
       return;
+    }
+
+    // ── Natural language action detection ──
+    const intent = detectActionIntent(text);
+    if (intent) {
+      this.addMessage({
+        id: uid(), timestamp: Date.now(), sender: this.analystSender,
+        type: 'text', content: text,
+      });
+      const cmdText = intent.target ? `/${intent.command} ${intent.target}` : `/${intent.command}`;
+      const result = processCommand(cmdText);
+      if (result) {
+        this.addMessage({
+          id: uid(), timestamp: Date.now(),
+          sender: { id: 'system', name: 'SYSTEM', type: 'system', color: '#888' },
+          type: 'command_response', content: result,
+        });
+        return;
+      }
     }
 
     // Regular message
