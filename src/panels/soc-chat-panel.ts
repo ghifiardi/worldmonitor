@@ -2411,7 +2411,7 @@ export class SocChatPanel {
     if (this.isOpen) {
       this.unreadCount = 0;
       this.updateBadge();
-      this.scrollToBottom();
+      this.scrollToTop();
       setTimeout(() => this.inputEl.focus(), 300);
     }
   }
@@ -2732,7 +2732,7 @@ export class SocChatPanel {
       <span class="soc-typing-dots"><span></span><span></span><span></span></span>
     `;
     this.msgsEl.appendChild(el);
-    this.scrollToBottom();
+    this.scrollToTop();
   }
 
   private hideTyping(agentId: string): void {
@@ -2897,7 +2897,9 @@ export class SocChatPanel {
     let html = '';
     let lastDate = '';
 
-    for (const msg of this.messages) {
+    // Newest messages first — iterate in reverse
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i]!;
       const date = fmtDate(msg.timestamp);
       if (date !== lastDate) {
         html += `<div class="soc-chat-date">\u2500\u2500 ${escapeHtml(date)} \u2500\u2500</div>`;
@@ -2971,8 +2973,8 @@ export class SocChatPanel {
         </div>`;
     }
 
-    // Check if user is near the bottom before replacing content
-    const wasNearBottom = this.msgsEl.scrollHeight - this.msgsEl.scrollTop - this.msgsEl.clientHeight < 80;
+    // Check if user is near the top before replacing content
+    const wasNearTop = this.msgsEl.scrollTop < 80;
 
     this.msgsEl.innerHTML = html;
 
@@ -2986,13 +2988,13 @@ export class SocChatPanel {
       });
     }
 
-    // Only auto-scroll if user was already at the bottom
-    if (wasNearBottom) this.scrollToBottom();
+    // New messages are at top — scroll to top so newest is visible
+    if (wasNearTop) this.scrollToTop();
   }
 
-  private scrollToBottom(): void {
+  private scrollToTop(): void {
     requestAnimationFrame(() => {
-      this.msgsEl.scrollTop = this.msgsEl.scrollHeight;
+      this.msgsEl.scrollTop = 0;
     });
   }
 
