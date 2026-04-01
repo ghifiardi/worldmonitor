@@ -242,94 +242,36 @@ function extractIoC(text: string): { type: IoCType; value: string } | null {
   return null;
 }
 
-// ── MITRE ATT&CK technique knowledge base ───────────────────────
+// ── MITRE ATT&CK technique database (691 techniques, loaded from /data/mitre-techniques.json) ──
 
-interface MitreTechniqueInfo {
+interface MitreTechniqueEntry {
+  id: string;
   name: string;
   tactic: string;
-  description: string;
-  detection: string;
-  mitigation: string;
+  desc: string;
 }
 
-const MITRE_TECHNIQUE_DB: Record<string, MitreTechniqueInfo> = {
-  'T1059': { name: 'Command and Scripting Interpreter', tactic: 'Execution',
-    description: 'Adversaries abuse command and script interpreters to execute commands, scripts, or binaries. These interfaces include PowerShell, Bash, Windows Command Shell, Python, JavaScript, VBScript, and others.',
-    detection: '\u2022 Monitor process creation for cmd.exe, powershell.exe, bash, python, wscript.exe\n\u2022 Log command-line arguments (Sysmon Event ID 1)\n\u2022 Detect encoded commands (base64, -enc flags)\n\u2022 Alert on script engines launched by unexpected parents',
-    mitigation: '\u2022 Constrained Language Mode for PowerShell\n\u2022 Application allowlisting (AppLocker, WDAC)\n\u2022 Disable unused scripting engines\n\u2022 Block macro execution in Office documents' },
-  'T1059.001': { name: 'PowerShell', tactic: 'Execution',
-    description: 'Adversaries abuse PowerShell for execution, discovery, and data exfiltration. PowerShell is present on all modern Windows and available cross-platform via PowerShell Core.',
-    detection: '\u2022 Enable Script Block Logging (Event ID 4104)\n\u2022 Enable Module Logging and Transcription\n\u2022 Detect -EncodedCommand, -Bypass, -NoProfile flags\n\u2022 Monitor for suspicious .ps1 downloads and IEX patterns',
-    mitigation: '\u2022 Constrained Language Mode\n\u2022 Remove PowerShell v2 (bypasses AMSI)\n\u2022 AppLocker rules for powershell.exe\n\u2022 AMSI (Antimalware Scan Interface) integration' },
-  'T1059.003': { name: 'Windows Command Shell', tactic: 'Execution',
-    description: 'Adversaries abuse cmd.exe to execute commands. The Windows command shell is used for control flow, execution, and batch scripting.',
-    detection: '\u2022 Monitor cmd.exe process creation\n\u2022 Log command-line arguments\n\u2022 Detect unusual parent-child (e.g. Word spawning cmd.exe)',
-    mitigation: '\u2022 Application allowlisting\n\u2022 Restrict command shell access via GPO\n\u2022 Monitor batch file creation/execution' },
-  'T1566': { name: 'Phishing', tactic: 'Initial Access',
-    description: 'Adversaries send phishing messages to gain access. This includes spearphishing attachments, links, and via services. Phishing is one of the most common initial access vectors.',
-    detection: '\u2022 Email gateway analysis (attachments, links, sender reputation)\n\u2022 Sandboxing of email attachments\n\u2022 URL rewriting and click-time protection\n\u2022 User-reported phishing workflows',
-    mitigation: '\u2022 Security awareness training\n\u2022 Multi-factor authentication\n\u2022 Email filtering and DMARC/DKIM/SPF\n\u2022 Disable macros in Office documents' },
-  'T1566.001': { name: 'Spearphishing Attachment', tactic: 'Initial Access',
-    description: 'Adversaries send spearphishing emails with malicious attachments (Office docs, PDFs, executables). The attachment triggers code execution when opened.',
-    detection: '\u2022 Sandbox analysis of attachments\n\u2022 Detect macro-enabled documents (.docm, .xlsm)\n\u2022 Monitor Office spawning suspicious child processes\n\u2022 YARA rules for embedded payloads',
-    mitigation: '\u2022 Block macros from internet-sourced files\n\u2022 Attack Surface Reduction rules\n\u2022 Protected View for Office\n\u2022 Application allowlisting' },
-  'T1566.002': { name: 'Spearphishing Link', tactic: 'Initial Access',
-    description: 'Adversaries send spearphishing emails with malicious links leading to credential harvesting pages, drive-by downloads, or exploit kits.',
-    detection: '\u2022 URL reputation scanning at email gateway\n\u2022 Click-time URL verification\n\u2022 Browser isolation for email links\n\u2022 Monitor for credential submission to unfamiliar domains',
-    mitigation: '\u2022 URL filtering/proxy\n\u2022 FIDO2/WebAuthn (phishing-resistant MFA)\n\u2022 Security awareness training\n\u2022 Browser isolation' },
-  'T1021': { name: 'Remote Services', tactic: 'Lateral Movement',
-    description: 'Adversaries use valid accounts to log into remote services (RDP, SSH, SMB, WinRM, VNC) for lateral movement within the network.',
-    detection: '\u2022 Monitor authentication logs for remote services\n\u2022 Detect unusual RDP/SSH sessions (new source IPs)\n\u2022 Alert on lateral movement patterns (sequential logins)\n\u2022 Network flow analysis for internal RDP/SSH',
-    mitigation: '\u2022 Network segmentation\n\u2022 MFA for remote access\n\u2022 Just-in-time access / PAM\n\u2022 Disable unnecessary remote services' },
-  'T1003': { name: 'OS Credential Dumping', tactic: 'Credential Access',
-    description: 'Adversaries dump credentials from the OS — LSASS memory, SAM database, NTDS.dit, /etc/shadow. Tools: Mimikatz, ProcDump, secretsdump.',
-    detection: '\u2022 Monitor lsass.exe access (Sysmon Event ID 10)\n\u2022 Detect Mimikatz signatures and LSASS memory reads\n\u2022 Alert on ntdsutil, vssadmin (shadow copy for NTDS.dit)\n\u2022 Credential Guard telemetry',
-    mitigation: '\u2022 Credential Guard (Windows 10+)\n\u2022 LSA Protection (RunAsPPL)\n\u2022 Restrict admin access to DCs\n\u2022 Regular credential rotation' },
-  'T1486': { name: 'Data Encrypted for Impact', tactic: 'Impact',
-    description: 'Adversaries encrypt data on target systems to disrupt availability — ransomware. Files are encrypted with symmetric/asymmetric keys and victims are extorted for decryption.',
-    detection: '\u2022 Monitor for mass file renames/modifications\n\u2022 Detect high-entropy file writes\n\u2022 Canary files (honeytokens) in sensitive directories\n\u2022 Volume shadow copy deletion (vssadmin, wmic)',
-    mitigation: '\u2022 Offline/immutable backups\n\u2022 Network segmentation\n\u2022 Application allowlisting\n\u2022 Endpoint detection and response (EDR)' },
-  'T1190': { name: 'Exploit Public-Facing Application', tactic: 'Initial Access',
-    description: 'Adversaries exploit vulnerabilities in internet-facing applications — web servers, VPNs, firewalls, email gateways. Common targets: Exchange, Citrix, Fortinet, Palo Alto.',
-    detection: '\u2022 WAF logs and anomaly detection\n\u2022 Monitor for exploitation indicators (webshells, unexpected processes)\n\u2022 Vulnerability scanning of external assets\n\u2022 IDS/IPS signatures for known CVEs',
-    mitigation: '\u2022 Patch management (critical CVEs within 24-48h)\n\u2022 WAF rules\n\u2022 Network segmentation (DMZ)\n\u2022 Virtual patching' },
-  'T1078': { name: 'Valid Accounts', tactic: 'Defense Evasion / Persistence / Initial Access',
-    description: 'Adversaries obtain and abuse legitimate credentials to gain access, persist, and evade detection. Credentials may come from phishing, credential dumping, or dark web.',
-    detection: '\u2022 Impossible travel detection\n\u2022 Anomalous login times/locations\n\u2022 Failed login spikes followed by success\n\u2022 Service account usage from unexpected hosts',
-    mitigation: '\u2022 MFA everywhere\n\u2022 Conditional access policies\n\u2022 Regular credential audits\n\u2022 Privileged Access Management (PAM)' },
-  'T1071': { name: 'Application Layer Protocol', tactic: 'Command and Control',
-    description: 'Adversaries communicate with C2 servers using standard application layer protocols (HTTP/S, DNS, SMTP) to blend in with legitimate traffic.',
-    detection: '\u2022 DNS query analysis (DGA detection, DNS tunneling)\n\u2022 HTTP/S traffic anomaly (beaconing intervals, JA3 fingerprints)\n\u2022 SSL/TLS inspection for encrypted C2\n\u2022 NetFlow analysis for periodic callbacks',
-    mitigation: '\u2022 DNS filtering\n\u2022 TLS inspection\n\u2022 Web proxy with content inspection\n\u2022 Network segmentation' },
-  'T1053': { name: 'Scheduled Task/Job', tactic: 'Execution / Persistence',
-    description: 'Adversaries abuse task scheduling (cron, schtasks, at) to execute malicious code at system startup or on a schedule for persistence.',
-    detection: '\u2022 Monitor scheduled task creation (Event ID 4698)\n\u2022 Audit cron job changes on Linux\n\u2022 Detect tasks running from temp/user directories\n\u2022 Alert on tasks created by non-admin users',
-    mitigation: '\u2022 Restrict task creation to admins\n\u2022 Audit scheduled tasks regularly\n\u2022 Application allowlisting for task executables' },
-  'T1027': { name: 'Obfuscated Files or Information', tactic: 'Defense Evasion',
-    description: 'Adversaries obfuscate payloads, scripts, or C2 traffic to evade detection. Techniques include encoding, encryption, packing, steganography, and string manipulation.',
-    detection: '\u2022 Detect encoded PowerShell (-enc, base64)\n\u2022 Entropy analysis of files and scripts\n\u2022 AMSI for script deobfuscation\n\u2022 Sandbox behavioral analysis',
-    mitigation: '\u2022 AMSI integration\n\u2022 Script block logging\n\u2022 Behavioral detection over signature-based\n\u2022 Endpoint detection and response' },
-  'T1547': { name: 'Boot or Logon Autostart Execution', tactic: 'Persistence',
-    description: 'Adversaries configure system settings to automatically execute a program during boot or logon — registry Run keys, startup folder, Launch Agents/Daemons.',
-    detection: '\u2022 Monitor registry Run/RunOnce keys\n\u2022 Audit startup folder changes\n\u2022 macOS: monitor LaunchAgents/LaunchDaemons\n\u2022 Linux: monitor systemd units, rc.local, init.d',
-    mitigation: '\u2022 Restrict registry/startup folder write access\n\u2022 Application allowlisting\n\u2022 Regular autostart audit' },
-  'T1048': { name: 'Exfiltration Over Alternative Protocol', tactic: 'Exfiltration',
-    description: 'Adversaries exfiltrate data over protocols different from C2 — DNS tunneling, ICMP, FTP, cloud storage APIs, or steganography in HTTP.',
-    detection: '\u2022 DNS query volume/size anomaly detection\n\u2022 ICMP payload inspection\n\u2022 Monitor for unusual outbound protocols\n\u2022 DLP at network boundary',
-    mitigation: '\u2022 DNS filtering and monitoring\n\u2022 Restrict outbound protocols\n\u2022 Data Loss Prevention (DLP)\n\u2022 Network segmentation' },
-  'T1204': { name: 'User Execution', tactic: 'Execution',
-    description: 'Adversaries rely on users to execute malicious content — clicking links, opening attachments, running downloaded files. Social engineering enables this.',
-    detection: '\u2022 Monitor process creation from user-initiated applications\n\u2022 Detect Office/PDF readers spawning shells\n\u2022 Track downloaded file execution\n\u2022 Browser-initiated process monitoring',
-    mitigation: '\u2022 Security awareness training\n\u2022 Application allowlisting\n\u2022 Attack Surface Reduction rules\n\u2022 Sandboxed document viewing' },
-  'T1055': { name: 'Process Injection', tactic: 'Defense Evasion / Privilege Escalation',
-    description: 'Adversaries inject code into running processes to evade detection and escalate privileges. Techniques include DLL injection, process hollowing, APC injection, and thread hijacking.',
-    detection: '\u2022 Monitor for CreateRemoteThread, NtMapViewOfSection\n\u2022 Sysmon Event IDs 8, 10 (remote thread, process access)\n\u2022 Detect unsigned DLLs loaded into trusted processes\n\u2022 Memory integrity scanning',
-    mitigation: '\u2022 Endpoint Detection and Response\n\u2022 Code integrity policies\n\u2022 Restrict debug privileges\n\u2022 Address Space Layout Randomization (ASLR)' },
-  'T1110': { name: 'Brute Force', tactic: 'Credential Access',
-    description: 'Adversaries use brute force to obtain credentials — password guessing, spraying, credential stuffing. Targets include RDP, SSH, web apps, and cloud services.',
-    detection: '\u2022 Failed login threshold alerts\n\u2022 Password spray detection (many accounts, few passwords)\n\u2022 Credential stuffing patterns (known breach lists)\n\u2022 Account lockout monitoring',
-    mitigation: '\u2022 Account lockout policies\n\u2022 MFA\n\u2022 Rate limiting on authentication\n\u2022 Block known compromised passwords' },
-};
+let _mitreDb: Map<string, MitreTechniqueEntry> | null = null;
+let _mitreLoading: Promise<void> | null = null;
+
+function ensureMitreDb(): Promise<void> {
+  if (_mitreDb) return Promise.resolve();
+  if (_mitreLoading) return _mitreLoading;
+  _mitreLoading = fetch('/data/mitre-techniques.json')
+    .then(r => r.json())
+    .then((entries: MitreTechniqueEntry[]) => {
+      _mitreDb = new Map(entries.map(e => [e.id, e]));
+    })
+    .catch(() => { _mitreDb = new Map(); });
+  return _mitreLoading;
+}
+
+// Kick off preload immediately on module init
+ensureMitreDb();
+
+function lookupMitreTechnique(tid: string): MitreTechniqueEntry | undefined {
+  return _mitreDb?.get(tid);
+}
 
 // ── Agent response generation ────────────────────────────────────
 
@@ -617,26 +559,35 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
       // MITRE technique lookup — "what is T1059", "T1566.001", "explain T1021"
       const techniqueMatch = message.match(/\bT(\d{4})(?:\.(\d{3}))?\b/i);
       if (techniqueMatch) {
+        await ensureMitreDb();
         const tid = `T${techniqueMatch[1]}${techniqueMatch[2] ? `.${techniqueMatch[2]}` : ''}`;
-        const info = MITRE_TECHNIQUE_DB[tid] ?? MITRE_TECHNIQUE_DB[`T${techniqueMatch[1]}`];
+        const info = lookupMitreTechnique(tid) ?? lookupMitreTechnique(`T${techniqueMatch[1]}`);
         if (info) {
           const activeHits = alerts.filter(a => a.mitreId === tid || a.mitreId.startsWith(`T${techniqueMatch[1]}`));
-          let response = `MITRE ATT&CK: ${tid} \u2014 ${info.name}\n` +
+          // Find sub-techniques if this is a parent
+          const subs: MitreTechniqueEntry[] = [];
+          if (!tid.includes('.') && _mitreDb) {
+            for (const [k, v] of _mitreDb) {
+              if (k.startsWith(tid + '.')) subs.push(v);
+            }
+          }
+          let response = `MITRE ATT&CK: ${info.id} \u2014 ${info.name}\n` +
             `${'━'.repeat(40)}\n` +
-            `Tactic: ${info.tactic}\n` +
-            `${info.description}\n\n` +
-            `Detection:\n${info.detection}\n\n` +
-            `Mitigation:\n${info.mitigation}`;
+            `Tactic: ${info.tactic}\n\n` +
+            `${info.desc}`;
+          if (subs.length > 0) {
+            response += `\n\nSub-techniques (${subs.length}):\n` +
+              subs.slice(0, 10).map(s => `  ${s.id} \u2014 ${s.name}`).join('\n') +
+              (subs.length > 10 ? `\n  ... and ${subs.length - 10} more` : '');
+          }
           if (activeHits.length > 0) {
             response += `\n\n\u26A0\uFE0F Active in this session: ${activeHits.length} alert(s) matching ${tid}`;
           }
           response += `\n\nRef: https://attack.mitre.org/techniques/${tid.replace('.', '/')}/`;
           return response;
         }
-        // Unknown technique ID — still give a useful response
-        return `${tid} is a MITRE ATT&CK technique ID but I don't have it in my local database.\n` +
-          `Check: https://attack.mitre.org/techniques/${tid.replace('.', '/')}/\n\n` +
-          `Active MITRE techniques in this session: ${[...new Set(alerts.map(a => a.mitreId))].slice(0, 8).join(', ') || 'none'}`;
+        return `${tid} not found in MITRE ATT&CK database (691 techniques loaded).\n` +
+          `Check: https://attack.mitre.org/techniques/${tid.replace('.', '/')}/`;
       }
 
       // MITRE general mapping (no specific technique ID asked)
