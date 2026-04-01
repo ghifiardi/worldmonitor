@@ -1883,10 +1883,19 @@ class ResponseGateClient {
 
   getPending(): GateRequest[] { return [...this.pending.values()]; }
 
+  private resolveId(input: string): string | undefined {
+    const upper = input.toUpperCase();
+    for (const key of this.pending.keys()) {
+      if (key.toUpperCase() === upper) return key;
+    }
+    return undefined;
+  }
+
   approve(requestId: string): GateRequest | null {
-    const req = this.pending.get(requestId);
-    if (!req) return null;
-    this.pending.delete(requestId);
+    const key = this.resolveId(requestId);
+    if (!key) return null;
+    const req = this.pending.get(key)!;
+    this.pending.delete(key);
     return req;
   }
 
@@ -1897,7 +1906,9 @@ class ResponseGateClient {
   }
 
   deny(requestId: string): boolean {
-    return this.pending.delete(requestId);
+    const key = this.resolveId(requestId);
+    if (!key) return false;
+    return this.pending.delete(key);
   }
 
   denyAll(): number {
@@ -1909,7 +1920,7 @@ class ResponseGateClient {
 
 const responseGate = new ResponseGateClient();
 let gateIdCounter = 0;
-function gateId(): string { return `GATE-${Date.now()}-${++gateIdCounter}`; }
+function gateId(): string { return `G${(++gateIdCounter).toString().padStart(3, '0')}`; }
 
 // ── Slash commands ────────────────────────────────────────────────
 
@@ -1924,72 +1935,65 @@ function processCommand(input: string): string | null {
   const handlers: Record<string, () => string> = {
     'block': () => {
       const target = args || '<target>';
-      const req: GateRequest = { id: gateId(), action: 'block', target, severity: 'high', confidence: 0.85, reason: `Analyst /block command`, timestamp: Date.now() };
+      const req: GateRequest = { id: gateId(), action: 'block', target, severity: 'high', confidence: 0.85, reason: 'Analyst /block command', timestamp: Date.now() };
       const decision = responseGate.evaluate(req);
-      if (decision.allowed) return `CRA: \u2705 Blocking ${target}. Firewall rule deploying.\n(${decision.reason})`;
-      return `CRA: \u23F3 Block ${target} HELD for approval.\n${decision.reason}\nType /approve ${req.id} or /approve-all to execute.`;
+      if (decision.allowed) return `CRA: \u2705 Blocking ${target}. Firewall rule deploying.`;
+      return `CRA: \u23F3 Block ${target} held for approval.\n\u2022 Reason: auto-block disabled\n\u2022 /approve ${req.id}  or  /approve-all`;
     },
     'unblock': () => `CRA: \u2705 Unblocking ${args || '<target>'}. Rule removed.`,
     'hold': () => `CRA: Containment held for ${args || '<target>'}. Manual approval required.`,
     'release': () => `CRA: Hold released for ${args || '<target>'}. Automatic response resumed.`,
     'isolate': () => {
       const target = args || '<endpoint>';
-      const req: GateRequest = { id: gateId(), action: 'isolate', target, severity: 'critical', confidence: 0.90, reason: `Analyst /isolate command`, timestamp: Date.now() };
+      const req: GateRequest = { id: gateId(), action: 'isolate', target, severity: 'critical', confidence: 0.90, reason: 'Analyst /isolate command', timestamp: Date.now() };
       const decision = responseGate.evaluate(req);
-      if (decision.allowed) return `CRA: \u2705 Isolating endpoint ${target}.\n(${decision.reason})`;
-      return `CRA: \u23F3 Isolate ${target} HELD for approval.\n${decision.reason}\nType /approve ${req.id} or /approve-all to execute.`;
+      if (decision.allowed) return `CRA: \u2705 Isolating endpoint ${target}.`;
+      return `CRA: \u23F3 Isolate ${target} held for approval.\n\u2022 Reason: endpoint isolation requires confirmation\n\u2022 /approve ${req.id}  or  /approve-all`;
     },
     'kill': () => {
       const target = args || '<pid>';
-      const req: GateRequest = { id: gateId(), action: 'kill', target, severity: 'critical', confidence: 0.90, reason: `Analyst /kill command`, timestamp: Date.now() };
+      const req: GateRequest = { id: gateId(), action: 'kill', target, severity: 'critical', confidence: 0.90, reason: 'Analyst /kill command', timestamp: Date.now() };
       const decision = responseGate.evaluate(req);
-      if (decision.allowed) return `CRA: \u2705 Terminating process ${target}.\n(${decision.reason})`;
-      return `CRA: \u23F3 Kill PID ${target} HELD for approval.\n${decision.reason}\nType /approve ${req.id} or /approve-all to execute.`;
+      if (decision.allowed) return `CRA: \u2705 Terminating process ${target}.`;
+      return `CRA: \u23F3 Kill PID ${target} held for approval.\n\u2022 Reason: process kill requires confirmation\n\u2022 /approve ${req.id}  or  /approve-all`;
     },
     'approve': () => {
       if (!args) {
         const pending = responseGate.getPending();
-        if (pending.length === 0) return 'GATE: No pending actions to approve.';
-        return `GATE: ${pending.length} pending action(s):\n` +
-          pending.map(p => `  ${p.id} \u2014 ${p.action} ${p.target} [${p.severity}]`).join('\n') +
-          `\n\nType /approve <id> or /approve-all`;
+        if (pending.length === 0) return 'No pending actions.';
+        return `${pending.length} pending:\n` +
+          pending.map(p => `  ${p.id}  ${p.action} \u2192 ${p.target}  [${p.severity}]`).join('\n') +
+          `\n\n/approve <id>  or  /approve-all`;
       }
       const approved = responseGate.approve(args);
-      if (!approved) return `GATE: Request ${args} not found in pending queue.`;
-      return `CRA: \u2705 APPROVED \u2014 executing ${approved.action} on ${approved.target}.\nAction authorized by analyst at ${new Date().toISOString().slice(11, 19)}Z.`;
+      if (!approved) return `"${args}" not found. Type /pending to see queue.`;
+      return `CRA: \u2705 Approved \u2014 ${approved.action} ${approved.target} executing.`;
     },
     'approve-all': () => {
       const approved = responseGate.approveAll();
-      if (approved.length === 0) return 'GATE: No pending actions to approve.';
-      return `CRA: \u2705 APPROVED ALL \u2014 ${approved.length} action(s) executing:\n` +
-        approved.map(p => `  \u2022 ${p.action} ${p.target}`).join('\n') +
-        `\nAuthorized by analyst at ${new Date().toISOString().slice(11, 19)}Z.`;
+      if (approved.length === 0) return 'No pending actions.';
+      return `CRA: \u2705 Approved ${approved.length} action(s):\n` +
+        approved.map(p => `  \u2022 ${p.action} ${p.target}`).join('\n');
     },
     'deny': () => {
-      if (!args) return 'Usage: /deny <request-id> or /deny-all';
+      if (!args) return 'Usage: /deny <id>  or  /deny-all';
       const denied = responseGate.deny(args);
-      if (!denied) return `GATE: Request ${args} not found in pending queue.`;
-      return `GATE: \u274C DENIED \u2014 ${args} will not be executed.`;
+      if (!denied) return `"${args}" not found. Type /pending to see queue.`;
+      return `\u274C Denied \u2014 ${args} cancelled.`;
     },
     'deny-all': () => {
       const count = responseGate.denyAll();
-      if (count === 0) return 'GATE: No pending actions to deny.';
-      return `GATE: \u274C DENIED ALL \u2014 ${count} action(s) cancelled.`;
+      if (count === 0) return 'No pending actions.';
+      return `\u274C Denied ${count} action(s).`;
     },
     'pending': () => {
       const pending = responseGate.getPending();
-      if (pending.length === 0) return 'GATE: No pending response actions. All clear.';
-      return `GATE: ${pending.length} pending action(s) awaiting approval:\n` +
-        `${'━'.repeat(40)}\n` +
+      if (pending.length === 0) return 'No pending actions. All clear.';
+      return `${pending.length} pending:\n` +
         pending.map(p =>
-          `  ${p.id}\n` +
-          `  Action: ${p.action.toUpperCase()} \u2192 ${p.target}\n` +
-          `  Severity: ${p.severity.toUpperCase()} \u2022 Confidence: ${(p.confidence * 100).toFixed(0)}%\n` +
-          `  Reason: ${p.reason}\n` +
-          `  Queued: ${new Date(p.timestamp).toISOString().slice(11, 19)}Z`
-        ).join('\n\n') +
-        `\n${'━'.repeat(40)}\n` +
-        `/approve <id> \u00B7 /approve-all \u00B7 /deny <id> \u00B7 /deny-all`;
+          `  ${p.id}  ${p.action.toUpperCase()} \u2192 ${p.target}  [${p.severity}] ${(p.confidence * 100).toFixed(0)}%`
+        ).join('\n') +
+        `\n\n/approve <id>  \u00B7  /approve-all  \u00B7  /deny <id>  \u00B7  /deny-all`;
     },
     'escalate': () => `TAA: Alert ${args || '<id>'} manually escalated to CRITICAL.`,
     'dismiss': () => `TAA: Alert ${args || '<id>'} dismissed by analyst. Logged.`,
