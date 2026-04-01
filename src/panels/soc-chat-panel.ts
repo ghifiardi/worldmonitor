@@ -2060,7 +2060,7 @@ async function relayCraAction(
     const baseUrl = getGatraLocalUrl();
     const res = await fetch(`${baseUrl}${route.url}`, {
       method: route.method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
       signal: AbortSignal.timeout(5000),
     });
     const data = await res.json();
@@ -2295,7 +2295,7 @@ function processCommand(input: string): string | null {
     },
     'test-backend': () => {
       const url = getGatraLocalUrl();
-      fetch(`${url}/api/status`, { signal: AbortSignal.timeout(3000) })
+      fetch(`${url}/api/status`, { headers: { 'ngrok-skip-browser-warning': '1' }, signal: AbortSignal.timeout(3000) })
         .then(r => r.json())
         .then(d => _postSystemMessage(
           `\u2705 Backend connected: ${url}\n` +
