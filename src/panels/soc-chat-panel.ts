@@ -2179,6 +2179,15 @@ function detectActionIntent(text: string): DetectedIntent | null {
 
 function resolveAlertTarget(target: string, alerts: GatraAlert[]): GatraAlert[] {
   const t = target.trim();
+
+  // Multiple IDs separated by spaces or commas (e.g. "ALR-abc ALR-def ALR-ghi")
+  const tokens = t.split(/[\s,]+/).filter(Boolean);
+  if (tokens.length > 1 && tokens.every(tok => /^ALR-/i.test(tok) || /^CVE-/i.test(tok) || /^INC-/i.test(tok))) {
+    const ids = new Set(tokens.map(tok => tok.toLowerCase()));
+    const matched = alerts.filter(a => ids.has(a.id.toLowerCase()));
+    if (matched.length > 0) return matched;
+  }
+
   // Exact alert ID match (ALR-xxx, INC-xxx, or any ID)
   const byId = alerts.filter(a => a.id.toLowerCase() === t.toLowerCase());
   if (byId.length > 0) return byId;
