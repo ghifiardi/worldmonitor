@@ -2379,34 +2379,38 @@ function processCommand(input: string): string | null {
         `\n\n/approve <id>  \u00B7  /approve-all  \u00B7  /deny <id>  \u00B7  /deny-all`;
     },
     'set-backend': () => {
-      if (!args) return `Current backend: ${getGatraLocalUrl()}\nUsage: /set-backend http://127.0.0.1:8847`;
+      if (!args) return `Current backend: ${getGatraLocalUrl() || 'Vercel (cloud)'}\nUsage: /set-backend <url>  or  /set-backend default`;
       try {
-        const url = args.trim().replace(/\/+$/, '');
-        localStorage.setItem('gatra_local_url', url);
-        return `Backend set to: ${url}\nTest with: /test-backend`;
+        const input = args.trim().replace(/\/+$/, '');
+        if (input === 'default' || input === 'vercel' || input === 'cloud' || input === 'reset') {
+          localStorage.removeItem('gatra_local_url');
+          return `Backend reset to Vercel (cloud). No tunnel needed.\nTest with: /test-backend`;
+        }
+        localStorage.setItem('gatra_local_url', input);
+        return `Backend set to: ${input}\nTest with: /test-backend`;
       } catch {
         return 'Failed to save backend URL.';
       }
     },
     'test-backend': () => {
       const url = getGatraLocalUrl();
+      const label = url || 'Vercel (cloud)';
       const fetchUrl = url ? `${url}/api/status` : '/api/gatra-local';
       const fetchOpts: RequestInit = url
-        ? { headers: { 'ngrok-skip-browser-warning': '1' }, signal: AbortSignal.timeout(3000) }
-        : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status' }), signal: AbortSignal.timeout(3000) };
+        ? { headers: { 'ngrok-skip-browser-warning': '1' }, signal: AbortSignal.timeout(5000) }
+        : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status' }), signal: AbortSignal.timeout(5000) };
       fetch(fetchUrl, fetchOpts)
-        .then(r => r.json())
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
         .then(d => _postSystemMessage(
-          `\u2705 Backend connected: ${url || 'Vercel (cloud)'}\n` +
-          `\u2022 Alerts: ${d.total_alerts ?? 0} | Blocked: ${d.total_blocked ?? d.blocked_ips ?? 0}\n` +
-          `\u2022 Gate pending: ${d.gate_pending ?? 0}`
+          `\u2705 Backend connected: ${label}\n` +
+          `\u2022 Blocked: ${d.total_blocked ?? d.blocked_ips ?? 0} | Gate pending: ${d.gate_pending ?? 0}`
         ))
-        .catch(() => _postSystemMessage(
-          `\u274C Backend unreachable: ${url}\n` +
-          `\u2022 Make sure gatra-local is running: uvicorn ui.dashboard:create_app --factory --port 8847\n` +
-          `\u2022 If using HTTPS, try: /set-backend https://your-tunnel.ngrok.io`
+        .catch(err => _postSystemMessage(
+          url
+            ? `\u274C Backend unreachable: ${url}\n\u2022 Error: ${err.message}\n\u2022 Try: /set-backend default  to use Vercel cloud backend`
+            : `\u274C Vercel backend error: ${err.message}`
         ));
-      return `Testing connection to ${url}...`;
+      return `Testing connection to ${label}...`;
     },
     'backend': () => {
       return `Backend: ${getGatraLocalUrl()}\n` +
