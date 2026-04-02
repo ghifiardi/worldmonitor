@@ -2090,6 +2090,48 @@ async function relayCraAction(
   }
 }
 
+// ── Analyst Memory (persists preferences, context, past incidents) ──
+
+interface AnalystMemory {
+  preferences: Record<string, string>;     // key-value prefs (e.g. "default_severity": "critical")
+  watchlist: string[];                      // techniques/IPs analyst is tracking
+  notes: Record<string, string>;            // alert_id/technique → analyst notes
+  recentEscalations: Array<{ target: string; timestamp: number }>;
+  recentBlocks: Array<{ ip: string; timestamp: number }>;
+  shiftLog: string[];                       // manual shift notes
+}
+
+const MEMORY_KEY = 'gatra_analyst_memory';
+
+function loadMemory(): AnalystMemory {
+  try {
+    const raw = localStorage.getItem(MEMORY_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return { preferences: {}, watchlist: [], notes: {}, recentEscalations: [], recentBlocks: [], shiftLog: [] };
+}
+
+function saveMemory(mem: AnalystMemory): void {
+  try {
+    localStorage.setItem(MEMORY_KEY, JSON.stringify(mem));
+  } catch {}
+}
+
+const analystMemory = loadMemory();
+
+// Auto-record escalations and blocks
+function recordEscalation(target: string): void {
+  analystMemory.recentEscalations.push({ target, timestamp: Date.now() });
+  if (analystMemory.recentEscalations.length > 50) analystMemory.recentEscalations = analystMemory.recentEscalations.slice(-50);
+  saveMemory(analystMemory);
+}
+
+function recordBlock(ip: string): void {
+  analystMemory.recentBlocks.push({ ip, timestamp: Date.now() });
+  if (analystMemory.recentBlocks.length > 50) analystMemory.recentBlocks = analystMemory.recentBlocks.slice(-50);
+  saveMemory(analystMemory);
+}
+
 // ── Natural language intent detection ────────────────────────────
 // Converts "escalate T1059", "block 10.0.0.1", etc. into slash commands
 // so analysts don't need to remember / syntax.
@@ -2300,6 +2342,326 @@ async function approveAllOnBackend(): Promise<void> {
 // ── System message callback (set by SocChatPanel on construction) ──
 let _postSystemMessage: (text: string) => void = () => {};
 
+// ── Incident Report Generator ─────────────────────────────────────
+
+function generateIncidentReport(
+  alerts: GatraAlert[],
+  actions: ReturnType<typeof getCRAActions>,
+): void {
+  const now = new Date();
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const reportId = `IR-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+  const analystId = 'SOC-ANALYST-01';
+
+  // ── Severity breakdown ──
+  const sevCounts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const a of alerts) sevCounts[a.severity] = (sevCounts[a.severity] ?? 0) + 1;
+  const maxSev = Math.max(...Object.values(sevCounts), 1);
+
+  // ── MITRE technique counts ──
+  const mitreCounts = new Map<string, { name: string; count: number }>();
+  for (const a of alerts) {
+    const entry = mitreCounts.get(a.mitreId);
+    if (entry) entry.count++;
+    else mitreCounts.set(a.mitreId, { name: a.mitreName, count: 1 });
+  }
+  const mitreSorted = [...mitreCounts.entries()].sort((a, b) => b[1].count - a[1].count);
+
+  // ── Time range ──
+  const timestamps = alerts.map(a => new Date(a.timestamp).getTime()).filter(t => !isNaN(t));
+  const earliest = timestamps.length ? new Date(Math.min(...timestamps)) : now;
+  const latest = timestamps.length ? new Date(Math.max(...timestamps)) : now;
+
+  // ── Timeline grouped by hour ──
+  const hourGroups = new Map<string, GatraAlert[]>();
+  for (const a of alerts) {
+    const d = new Date(a.timestamp);
+    const hourKey = `${pad2(d.getHours())}:00`;
+    const group = hourGroups.get(hourKey);
+    if (group) group.push(a);
+    else hourGroups.set(hourKey, [a]);
+  }
+  const hourKeys = [...hourGroups.keys()].sort();
+
+  // ── Top 20 alerts by severity ──
+  const sevOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  const topAlerts = [...alerts]
+    .sort((a, b) => (sevOrder[a.severity] ?? 4) - (sevOrder[b.severity] ?? 4))
+    .slice(0, 20);
+
+  // ── Response gate pending actions ──
+  const pendingActions = responseGate.getPending();
+
+  // ── Blocked IPs section ──
+  let blockedIpsHtml: string;
+  try {
+    const baseUrl = getGatraLocalUrl();
+    blockedIpsHtml = baseUrl
+      ? `<p style="color:#666">Backend URL configured (${baseUrl}). Check /status for current blocked IP count.</p>`
+      : '<p style="color:#666">No direct backend connection. Blocked IPs available via /status command.</p>';
+  } catch {
+    blockedIpsHtml = '<p style="color:#666">Backend unreachable.</p>';
+  }
+
+  // ── Recommendations ──
+  const recommendations: string[] = [];
+  const critCount = sevCounts.critical ?? 0;
+  const highCount = sevCounts.high ?? 0;
+  if (critCount > 0)
+    recommendations.push(`URGENT: ${critCount} critical alert(s) detected. Immediate escalation and containment recommended.`);
+  if (highCount > 5)
+    recommendations.push(`High-severity alert volume elevated (${highCount}). Consider activating additional SOC analysts.`);
+  if (mitreSorted.length > 0)
+    recommendations.push(`Top technique: ${mitreSorted[0]![1].name} (${mitreSorted[0]![0]}) with ${mitreSorted[0]![1].count} occurrence(s). Review detection rules for this technique.`);
+  if (pendingActions.length > 0)
+    recommendations.push(`${pendingActions.length} response action(s) pending approval. Review and approve/deny promptly.`);
+  if (critCount === 0 && highCount === 0)
+    recommendations.push('No critical or high severity alerts. Continue monitoring. Consider proactive threat hunting.');
+  if (alerts.length > 50)
+    recommendations.push(`High alert volume (${alerts.length}). Review tuning rules to reduce noise.`);
+  if (recommendations.length === 0)
+    recommendations.push('No specific recommendations at this time. Continue standard monitoring procedures.');
+
+  // ── Severity badge helper ──
+  const sevColor: Record<string, string> = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#3b82f6' };
+  const badge = (sev: string) =>
+    `<span style="background:${sevColor[sev] ?? '#666'};color:#fff;padding:2px 8px;border-radius:4px;font-size:0.8em;font-weight:600;text-transform:uppercase">${sev}</span>`;
+
+  // ── Escape for safe HTML embedding ──
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  // ── Build severity chart rows ──
+  const chartRows = (['critical', 'high', 'medium', 'low'] as const).map(sev => {
+    const count = sevCounts[sev] ?? 0;
+    const pct = maxSev > 0 ? (count / maxSev) * 100 : 0;
+    return `  <div class="chart-row">
+    <div class="chart-label" style="color:${sevColor[sev]}">${sev}</div>
+    <div class="chart-bar" style="width:${Math.max(pct, 2)}%;background:${sevColor[sev]}">${count > 0 ? count : ''}</div>
+    <div class="chart-count">${count} alert${count !== 1 ? 's' : ''}</div>
+  </div>`;
+  }).join('\n');
+
+  // ── Build timeline HTML ──
+  const timelineHtml = hourKeys.length === 0
+    ? '<p style="color:#666">No alerts to display.</p>'
+    : hourKeys.map(hour => {
+        const group = hourGroups.get(hour)!;
+        const entries = group.map(a =>
+          `<div class="timeline-entry">${badge(a.severity)} <strong>${esc(a.id)}</strong> ${esc(a.mitreId)} \u2014 ${esc(a.description.slice(0, 80))}${a.description.length > 80 ? '...' : ''} <span style="color:#666">[${a.agent}]</span></div>`
+        ).join('\n');
+        return `<div class="timeline-hour">${hour}</div>\n${entries}`;
+      }).join('\n');
+
+  // ── Build MITRE table ──
+  const mitreHtml = mitreSorted.length === 0
+    ? '<p style="color:#666">No MITRE techniques observed.</p>'
+    : `<table>
+  <thead><tr><th>Technique ID</th><th>Name</th><th>Count</th><th>Distribution</th></tr></thead>
+  <tbody>
+${mitreSorted.map(([id, v]) => {
+      const pct = (v.count / (mitreSorted[0]![1].count || 1)) * 100;
+      return `    <tr><td style="color:#4ade80">${esc(id)}</td><td>${esc(v.name)}</td><td>${v.count}</td><td><div style="background:#4ade80;height:12px;width:${Math.max(pct, 4)}%;border-radius:2px;opacity:0.7"></div></td></tr>`;
+    }).join('\n')}
+  </tbody>
+</table>`;
+
+  // ── Build top alerts table ──
+  const topAlertsHtml = topAlerts.length === 0
+    ? '<p style="color:#666">No alerts.</p>'
+    : `<table>
+  <thead><tr><th>ID</th><th>Severity</th><th>MITRE</th><th>Description</th><th>Confidence</th><th>Agent</th></tr></thead>
+  <tbody>
+${topAlerts.map(a =>
+      `    <tr><td>${esc(a.id)}</td><td>${badge(a.severity)}</td><td>${esc(a.mitreId)}</td><td>${esc(a.description.slice(0, 60))}${a.description.length > 60 ? '...' : ''}</td><td>${(a.confidence * 100).toFixed(0)}%</td><td>${a.agent}</td></tr>`
+    ).join('\n')}
+  </tbody>
+</table>`;
+
+  // ── Build response actions HTML ──
+  let actionsHtml: string;
+  if (actions.length === 0 && pendingActions.length === 0) {
+    actionsHtml = '<p style="color:#666">No response actions recorded in this session.</p>';
+  } else {
+    const gateItems = actions.slice(0, 30).map(a =>
+      `<div class="action-item"><strong>${esc(a.action)}</strong> ${esc(a.target ?? '')} <span style="color:#666">\u2014 ${esc(a.actionType)}</span> ${a.success ? '<span style="color:#4ade80">\u2713</span>' : '<span style="color:#ef4444">\u2717</span>'}</div>`
+    ).join('\n');
+    const overflow = actions.length > 30 ? `<p style="color:#666">... and ${actions.length - 30} more actions</p>` : '';
+    const pendingHtml = pendingActions.length > 0
+      ? `<h3>Pending Approval (${pendingActions.length})</h3>\n` +
+        pendingActions.map(p =>
+          `<div class="action-item" style="border-color:#f97316"><strong>${esc(p.action)}</strong> ${esc(p.target)} <span style="color:#f97316">\u23F3 awaiting approval</span></div>`
+        ).join('\n')
+      : '';
+    actionsHtml = `<h3>Gate Decisions (${actions.length} total)</h3>\n${gateItems}\n${overflow}\n${pendingHtml}`;
+  }
+
+  // ── Build recommendations HTML ──
+  const recsHtml = recommendations.map(r => `<div class="rec-item">${esc(r)}</div>`).join('\n');
+
+  // ── Top techniques summary line ──
+  const topTechLine = mitreSorted.length > 0
+    ? `<p style="margin-top:8px;color:#888">Top techniques: ${mitreSorted.slice(0, 5).map(([id, v]) => `${esc(id)} ${esc(v.name)} (${v.count})`).join(', ')}</p>`
+    : '';
+
+  // ── Full HTML document ──
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GATRA Incident Report \u2014 ${reportId}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d0d0d; color: #ccc;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px; line-height: 1.6; padding: 32px;
+  }
+  h1 { color: #fff; font-size: 1.6em; margin-bottom: 4px; }
+  h2 { color: #999; font-size: 1.1em; margin: 28px 0 12px; border-bottom: 1px solid #333; padding-bottom: 6px; }
+  h3 { color: #888; font-size: 0.95em; margin: 16px 0 8px; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; border-bottom: 2px solid #333; padding-bottom: 16px; }
+  .header-left { flex: 1; }
+  .logo-placeholder {
+    width: 80px; height: 80px; border: 2px solid #333; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: #555; font-size: 0.75em; text-align: center;
+  }
+  .meta { color: #666; font-size: 0.9em; margin-top: 8px; }
+  .meta span { margin-right: 20px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 12px 0; }
+  .summary-card {
+    background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 12px;
+  }
+  .summary-card .label { color: #666; font-size: 0.8em; text-transform: uppercase; }
+  .summary-card .value { color: #fff; font-size: 1.4em; font-weight: 700; margin-top: 4px; }
+  .chart-bar-container { margin: 8px 0; }
+  .chart-row { display: flex; align-items: center; margin: 6px 0; }
+  .chart-label { width: 70px; text-transform: uppercase; font-size: 0.8em; font-weight: 600; }
+  .chart-bar { height: 22px; border-radius: 3px; min-width: 2px; transition: width 0.3s; display: flex; align-items: center; padding-left: 8px; font-size: 0.8em; color: #fff; font-weight: 600; }
+  .chart-count { margin-left: 8px; color: #888; font-size: 0.85em; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+  th { text-align: left; color: #666; font-size: 0.8em; text-transform: uppercase; padding: 8px 10px; border-bottom: 2px solid #333; }
+  td { padding: 6px 10px; border-bottom: 1px solid #1f1f1f; font-size: 0.9em; }
+  tr:hover { background: #1a1a1a; }
+  .timeline-hour { color: #4ade80; font-weight: 700; margin-top: 12px; }
+  .timeline-entry { padding-left: 20px; border-left: 2px solid #333; margin-left: 12px; padding-top: 2px; padding-bottom: 2px; }
+  .action-item { background: #1a1a1a; border: 1px solid #333; border-radius: 4px; padding: 8px 12px; margin: 4px 0; }
+  .rec-item { background: #1a1a1a; border-left: 3px solid #f97316; padding: 10px 14px; margin: 6px 0; border-radius: 0 4px 4px 0; }
+  @media print {
+    body { background: #fff; color: #111; padding: 20px; font-size: 11px; }
+    h1 { color: #000; }
+    h2 { color: #333; border-bottom-color: #ccc; }
+    .summary-card { border-color: #ccc; background: #f9f9f9; }
+    .summary-card .value { color: #000; }
+    .chart-bar { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    .logo-placeholder { border-color: #ccc; }
+    td { border-bottom-color: #ddd; }
+    tr:hover { background: transparent; }
+    .action-item, .rec-item { background: #f9f9f9; border-color: #ccc; }
+    .rec-item { border-left-color: #f97316; }
+    .timeline-entry { border-left-color: #ccc; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-left">
+    <h1>GATRA Incident Report</h1>
+    <div class="meta">
+      <span>Report ID: <strong style="color:#fff">${reportId}</strong></span>
+      <span>Analyst: <strong style="color:#fff">${analystId}</strong></span>
+      <span>Generated: <strong style="color:#fff">${now.toISOString().replace('T', ' ').slice(0, 19)} UTC</strong></span>
+    </div>
+  </div>
+  <div class="logo-placeholder">GATRA<br>SOC</div>
+</div>
+
+<!-- 1. Executive Summary -->
+<h2>1. Executive Summary</h2>
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="label">Total Alerts</div>
+    <div class="value">${alerts.length}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Critical</div>
+    <div class="value" style="color:#ef4444">${sevCounts.critical}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">High</div>
+    <div class="value" style="color:#f97316">${sevCounts.high}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Medium</div>
+    <div class="value" style="color:#eab308">${sevCounts.medium}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Low</div>
+    <div class="value" style="color:#3b82f6">${sevCounts.low}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">MITRE Techniques</div>
+    <div class="value">${mitreCounts.size}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Time Range</div>
+    <div class="value" style="font-size:0.9em">${earliest.toLocaleTimeString()} \u2014 ${latest.toLocaleTimeString()}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Response Actions</div>
+    <div class="value">${actions.length}</div>
+  </div>
+</div>
+${topTechLine}
+
+<!-- 2. Severity Chart -->
+<h2>2. Severity Distribution</h2>
+<div class="chart-bar-container">
+${chartRows}
+</div>
+
+<!-- 3. Timeline -->
+<h2>3. Alert Timeline</h2>
+${timelineHtml}
+
+<!-- 4. MITRE ATT&CK Coverage -->
+<h2>4. MITRE ATT&amp;CK Coverage</h2>
+${mitreHtml}
+
+<!-- 5. Top Alerts -->
+<h2>5. Top Alerts (by Severity)</h2>
+${topAlertsHtml}
+
+<!-- 6. Response Actions -->
+<h2>6. Response Actions</h2>
+${actionsHtml}
+
+<!-- 7. Blocked IPs -->
+<h2>7. Blocked IPs</h2>
+${blockedIpsHtml}
+
+<!-- 8. Recommendations -->
+<h2>8. Recommendations</h2>
+${recsHtml}
+
+<div style="margin-top:40px;padding-top:16px;border-top:1px solid #333;color:#555;font-size:0.8em">
+  GATRA SOC \u2014 Automated Incident Report \u2014 ${now.toISOString()} \u2014 Classification: INTERNAL
+</div>
+
+</body>
+</html>`;
+
+  // ── Open in new tab ──
+  const w = window.open('', '_blank');
+  if (w) {
+    w.document.write(html);
+    w.document.close();
+  }
+}
+
 // ── Slash commands ────────────────────────────────────────────────
 
 function processCommand(input: string): string | null {
@@ -2315,6 +2677,7 @@ function processCommand(input: string): string | null {
       const target = args || '<target>';
       const req: GateRequest = { id: gateId(), action: 'block', target, severity: 'high', confidence: 0.85, reason: 'Analyst /block command', timestamp: Date.now() };
       const decision = responseGate.evaluate(req);
+      recordBlock(target);
       // Send to backend gate too (so approve-all can approve it there)
       relayCraAction('block', target, { reason: 'Analyst /block command', severity: 'high', confidence: 0.85 })
         .then(r => { if (r.backend) _postSystemMessage(`\u2705 Backend gate: ${r.detail}`); });
@@ -2431,10 +2794,93 @@ function processCommand(input: string): string | null {
         `  Then: /set-backend https://abc123.ngrok.io\n\n` +
         `For HTTP (localhost:3000), default works directly.`;
     },
+    // ── Memory commands ──
+    'watch': () => {
+      if (!args) {
+        if (analystMemory.watchlist.length === 0) return 'Watchlist empty. Usage: /watch T1059  or  /watch 10.0.0.1';
+        return `Watchlist (${analystMemory.watchlist.length}):\n` + analystMemory.watchlist.map(w => `  \u2022 ${w}`).join('\n') + `\n\n/unwatch <item> to remove`;
+      }
+      const item = args.trim();
+      if (!analystMemory.watchlist.includes(item)) {
+        analystMemory.watchlist.push(item);
+        saveMemory(analystMemory);
+      }
+      return `\u2705 Added "${item}" to watchlist. /watch to see all.`;
+    },
+    'unwatch': () => {
+      if (!args) return 'Usage: /unwatch <item>  or  /unwatch all';
+      if (args.trim().toLowerCase() === 'all') {
+        analystMemory.watchlist = [];
+        saveMemory(analystMemory);
+        return 'Watchlist cleared.';
+      }
+      const idx = analystMemory.watchlist.indexOf(args.trim());
+      if (idx >= 0) { analystMemory.watchlist.splice(idx, 1); saveMemory(analystMemory); }
+      return idx >= 0 ? `Removed "${args.trim()}" from watchlist.` : `"${args.trim()}" not in watchlist.`;
+    },
+    'note': () => {
+      if (!args) {
+        const entries = Object.entries(analystMemory.notes);
+        if (entries.length === 0) return 'No notes saved. Usage: /note T1059 Investigate after shift change';
+        return `Notes (${entries.length}):\n` + entries.map(([k, v]) => `  ${k}: ${v}`).join('\n');
+      }
+      const [key, ...rest] = args.split(' ');
+      if (!key || rest.length === 0) return 'Usage: /note <alert-or-technique> <your note>';
+      analystMemory.notes[key] = rest.join(' ');
+      saveMemory(analystMemory);
+      return `\u2705 Note saved for ${key}.`;
+    },
+    'shift-log': () => {
+      if (!args) {
+        if (analystMemory.shiftLog.length === 0) return 'Shift log empty. Usage: /shift-log Handed off T1059 investigation to night team';
+        return `Shift Log (${analystMemory.shiftLog.length}):\n` +
+          analystMemory.shiftLog.map((entry, i) => `  ${i + 1}. ${entry}`).join('\n');
+      }
+      const entry = `[${new Date().toISOString().slice(11, 19)}Z] ${args}`;
+      analystMemory.shiftLog.push(entry);
+      if (analystMemory.shiftLog.length > 100) analystMemory.shiftLog = analystMemory.shiftLog.slice(-100);
+      saveMemory(analystMemory);
+      return `\u2705 Shift log entry added.`;
+    },
+    'clear-shift-log': () => {
+      analystMemory.shiftLog = [];
+      saveMemory(analystMemory);
+      return 'Shift log cleared.';
+    },
+    'pref': () => {
+      if (!args) {
+        const entries = Object.entries(analystMemory.preferences);
+        if (entries.length === 0) return 'No preferences set. Usage: /pref default_severity critical';
+        return `Preferences:\n` + entries.map(([k, v]) => `  ${k} = ${v}`).join('\n');
+      }
+      const [key, ...rest] = args.split(' ');
+      if (!key || rest.length === 0) return 'Usage: /pref <key> <value>\nExamples:\n  /pref default_severity critical\n  /pref timezone UTC+7\n  /pref team blue-team-alpha';
+      analystMemory.preferences[key] = rest.join(' ');
+      saveMemory(analystMemory);
+      return `\u2705 Preference "${key}" set to "${rest.join(' ')}".`;
+    },
+    'memory': () => {
+      const esc = analystMemory.recentEscalations.length;
+      const blk = analystMemory.recentBlocks.length;
+      const watch = analystMemory.watchlist.length;
+      const notes = Object.keys(analystMemory.notes).length;
+      const prefs = Object.keys(analystMemory.preferences).length;
+      const shift = analystMemory.shiftLog.length;
+      return `Analyst Memory:\n` +
+        `  \u2022 Watchlist: ${watch} item(s)\n` +
+        `  \u2022 Notes: ${notes}\n` +
+        `  \u2022 Preferences: ${prefs}\n` +
+        `  \u2022 Shift log: ${shift} entries\n` +
+        `  \u2022 Escalations tracked: ${esc}\n` +
+        `  \u2022 Blocks tracked: ${blk}\n\n` +
+        `Commands: /watch  /unwatch  /note  /shift-log  /pref  /memory\n` +
+        `All data persists in your browser across sessions.`;
+    },
     'escalate': () => {
       if (!args) return 'Usage: /escalate <alert-id or technique>\nExamples: /escalate ALR-abc123  \u00B7  /escalate T1059';
       const matched = resolveAlertTarget(args, alerts);
       if (matched.length === 0) return `No alerts found matching "${args}".`;
+      recordEscalation(args);
       return `TAA: \u2B06\uFE0F Escalated ${matched.length} alert(s) matching "${args}" to CRITICAL.\n` +
         matched.slice(0, 5).map(a => `  ${a.id}  [${a.severity} \u2192 critical]  ${a.mitreId} \u2013 ${a.mitreName}`).join('\n') +
         (matched.length > 5 ? `\n  ... and ${matched.length - 5} more` : '') +
@@ -2466,7 +2912,10 @@ function processCommand(input: string): string | null {
         matched.slice(0, 3).map(a => `  ${a.id}  ${a.mitreId}`).join('\n') +
         (matched.length > 3 ? `\n  ... and ${matched.length - 3} more` : '');
     },
-    'report': () => `CLA: Generating incident report... ${alerts.length} alerts, ${actions.length} actions.`,
+    'report': () => {
+      generateIncidentReport(alerts, actions);
+      return `CLA: Incident report generated — opened in new tab. ${alerts.length} alerts, ${actions.length} actions.`;
+    },
     'status': () => {
       const agentStatuses = getAgentStatus();
       const pendingCount = responseGate.getPending().length;
@@ -2500,7 +2949,10 @@ function processCommand(input: string): string | null {
       `  malware \u00B7 phishing \u00B7 ransomware \u00B7 APT \u00B7 zero trust\n` +
       `  OWASP \u00B7 cloud security \u00B7 IoT/OT \u00B7 forensics \u00B7 DDoS\n` +
       `  MFA \u00B7 insider threat \u00B7 DevSecOps \u00B7 pentesting\n` +
-      `  encryption \u00B7 threat modeling \u00B7 supply chain \u00B7 SIEM`,
+      `  encryption \u00B7 threat modeling \u00B7 supply chain \u00B7 SIEM\n\n` +
+      `Analyst Memory (persists across sessions):\n` +
+      `/watch <item> \u00B7 /unwatch <item> \u00B7 /note <id> <text>\n` +
+      `/shift-log <entry> \u00B7 /pref <key> <value> \u00B7 /memory`,
   };
 
   // Command aliases — map common SOC verbs to canonical commands
@@ -2902,6 +3354,33 @@ export class SocChatPanel {
       .then(r => r.json())
       .then(d => this.addSystemMessage(`\u2705 Backend connected: ${d.total_alerts ?? 0} alerts, ${d.total_blocked ?? d.blocked_ips ?? 0} blocked IPs`))
       .catch(() => {});
+
+    // Show watchlist alerts on startup
+    if (analystMemory.watchlist.length > 0) {
+      setTimeout(() => {
+        const allAlerts = getAlerts();
+        const watchHits: string[] = [];
+        for (const item of analystMemory.watchlist) {
+          const count = allAlerts.filter(a =>
+            a.mitreId === item.toUpperCase() || a.id === item ||
+            a.mitreName.toLowerCase().includes(item.toLowerCase()) ||
+            a.description.toLowerCase().includes(item.toLowerCase())
+          ).length;
+          if (count > 0) watchHits.push(`  \u26A0\uFE0F ${item}: ${count} alert(s)`);
+        }
+        if (watchHits.length > 0) {
+          this.addSystemMessage(`Watchlist matches:\n${watchHits.join('\n')}`);
+        }
+      }, 3000);
+    }
+
+    // Show shift log if entries exist
+    if (analystMemory.shiftLog.length > 0) {
+      setTimeout(() => {
+        const recent = analystMemory.shiftLog.slice(-3);
+        this.addSystemMessage(`Last shift notes:\n${recent.map(e => `  \u2022 ${e}`).join('\n')}\nType /shift-log for full log.`);
+      }, 3500);
+    }
 
     // Bind PlaybookEngine callbacks
     this.playbookEngine.bind(
