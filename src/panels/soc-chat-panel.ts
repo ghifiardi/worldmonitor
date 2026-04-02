@@ -2036,13 +2036,13 @@ const CRA_ENDPOINT_MAP: Record<string, (target: string, opts: Record<string, unk
   isolate: (t, o) => ({ url: `/api/cra/block?ip=${encodeURIComponent(t)}&reason=${encodeURIComponent('endpoint isolation: ' + String(o.reason || ''))}&severity=critical&confidence=0.95`, method: 'POST' }),
 };
 
-// gatra-local URL — configurable via localStorage or default to localhost
-// Set via SOC chat: /set-backend http://127.0.0.1:8847
+// gatra-local URL — default uses Vercel serverless Python function (no tunnel needed)
+// Override via: /set-backend http://127.0.0.1:8000 (for local backend)
 function getGatraLocalUrl(): string {
   try {
-    return localStorage.getItem('gatra_local_url') || 'http://127.0.0.1:8847';
+    return localStorage.getItem('gatra_local_url') || '';
   } catch {
-    return 'http://127.0.0.1:8847';
+    return '';
   }
 }
 
@@ -2051,18 +2051,31 @@ async function relayCraAction(
   target: string,
   opts: { reason?: string; severity?: string; confidence?: number } = {},
 ): Promise<{ success: boolean; detail: string; backend: boolean }> {
-  const mapper = CRA_ENDPOINT_MAP[action];
-  if (!mapper) {
-    return { success: false, detail: `No backend mapping for action '${action}'`, backend: false };
-  }
   try {
-    const route = mapper(target, opts);
     const baseUrl = getGatraLocalUrl();
-    const res = await fetch(`${baseUrl}${route.url}`, {
-      method: route.method,
-      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
-      signal: AbortSignal.timeout(5000),
-    });
+    let res: Response;
+
+    if (!baseUrl) {
+      // Use Vercel serverless backend (default — no tunnel needed)
+      res = await fetch('/api/gatra-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, target, reason: opts.reason, severity: opts.severity, confidence: opts.confidence }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } else {
+      // Use custom backend (local or tunneled)
+      const mapper = CRA_ENDPOINT_MAP[action];
+      if (!mapper) {
+        return { success: false, detail: `No backend mapping for action '${action}'`, backend: false };
+      }
+      const route = mapper(target, opts);
+      res = await fetch(`${baseUrl}${route.url}`, {
+        method: route.method,
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
+        signal: AbortSignal.timeout(5000),
+      });
+    }
     const data = await res.json();
     if (data.executed === false && data.gate_id) {
       return { success: true, detail: `Backend gate held: ${data.reason}`, backend: true };
@@ -2193,21 +2206,41 @@ function resolveAlertTarget(target: string, alerts: GatraAlert[]): GatraAlert[] 
 async function approveOnBackend(action: string, target: string): Promise<void> {
   const baseUrl = getGatraLocalUrl();
   try {
-    // First try to approve on the backend gate (which holds actions from relay)
-    const pendingRes = await fetch(`${baseUrl}/api/gate/pending`, {
-      headers: { 'ngrok-skip-browser-warning': '1' },
-      signal: AbortSignal.timeout(3000),
-    });
-    const pending = await pendingRes.json();
+    let pendingRes: Response;
+    if (!baseUrl) {
+      pendingRes = await fetch('/api/gatra-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'pending' }),
+        signal: AbortSignal.timeout(3000),
+      });
+    } else {
+      pendingRes = await fetch(`${baseUrl}/api/gate/pending`, {
+        headers: { 'ngrok-skip-browser-warning': '1' },
+        signal: AbortSignal.timeout(3000),
+      });
+    }
+    const pendingData = await pendingRes.json();
+    const pending = pendingData.pending ?? pendingData;
     // Find matching pending action on backend
     const match = (pending as Array<{ id: string; action: string; target: string }>)
       .find(p => p.target === target || p.action.includes(action));
     if (match) {
-      const res = await fetch(`${baseUrl}/api/gate/approve/${match.id}?approved_by=analyst`, {
-        method: 'POST',
-        headers: { 'ngrok-skip-browser-warning': '1' },
-        signal: AbortSignal.timeout(5000),
-      });
+      let res: Response;
+      if (!baseUrl) {
+        res = await fetch('/api/gatra-local', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'approve', target: match.id, approved_by: 'analyst' }),
+          signal: AbortSignal.timeout(5000),
+        });
+      } else {
+        res = await fetch(`${baseUrl}/api/gate/approve/${match.id}?approved_by=analyst`, {
+          method: 'POST',
+          headers: { 'ngrok-skip-browser-warning': '1' },
+          signal: AbortSignal.timeout(5000),
+        });
+      }
       const data = await res.json();
       _postSystemMessage(data.approved
         ? `\u2705 Backend: ${action} ${target} executed.`
@@ -2227,11 +2260,21 @@ async function approveOnBackend(action: string, target: string): Promise<void> {
 async function approveAllOnBackend(): Promise<void> {
   const baseUrl = getGatraLocalUrl();
   try {
-    const res = await fetch(`${baseUrl}/api/gate/approve-all?approved_by=analyst`, {
-      method: 'POST',
-      headers: { 'ngrok-skip-browser-warning': '1' },
-      signal: AbortSignal.timeout(5000),
-    });
+    let res: Response;
+    if (!baseUrl) {
+      res = await fetch('/api/gatra-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve-all', approved_by: 'analyst' }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } else {
+      res = await fetch(`${baseUrl}/api/gate/approve-all?approved_by=analyst`, {
+        method: 'POST',
+        headers: { 'ngrok-skip-browser-warning': '1' },
+        signal: AbortSignal.timeout(5000),
+      });
+    }
     const data = await res.json();
     if (data.approved_count > 0) {
       const results = (data.results as Array<{ action: string; target: string; success: boolean }>);
@@ -2347,12 +2390,16 @@ function processCommand(input: string): string | null {
     },
     'test-backend': () => {
       const url = getGatraLocalUrl();
-      fetch(`${url}/api/status`, { headers: { 'ngrok-skip-browser-warning': '1' }, signal: AbortSignal.timeout(3000) })
+      const fetchUrl = url ? `${url}/api/status` : '/api/gatra-local';
+      const fetchOpts: RequestInit = url
+        ? { headers: { 'ngrok-skip-browser-warning': '1' }, signal: AbortSignal.timeout(3000) }
+        : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status' }), signal: AbortSignal.timeout(3000) };
+      fetch(fetchUrl, fetchOpts)
         .then(r => r.json())
         .then(d => _postSystemMessage(
-          `\u2705 Backend connected: ${url}\n` +
-          `\u2022 Events: ${d.total_events} | Alerts: ${d.total_alerts} | Blocked: ${d.blocked_ips}\n` +
-          `\u2022 Gate pending: ${d.gate_pending}`
+          `\u2705 Backend connected: ${url || 'Vercel (cloud)'}\n` +
+          `\u2022 Alerts: ${d.total_alerts ?? 0} | Blocked: ${d.total_blocked ?? d.blocked_ips ?? 0}\n` +
+          `\u2022 Gate pending: ${d.gate_pending ?? 0}`
         ))
         .catch(() => _postSystemMessage(
           `\u274C Backend unreachable: ${url}\n` +
@@ -2829,15 +2876,18 @@ export class SocChatPanel {
 
     // Welcome message + backend status
     const backendUrl = getGatraLocalUrl();
-    const isDefault = backendUrl === 'http://127.0.0.1:8847';
     this.addSystemMessage(
       `SOC COMMS initialized. 5 GATRA agents online. Type /help for commands.` +
-      (isDefault ? '' : `\nBackend: ${backendUrl}`)
+      (backendUrl ? `\nBackend: ${backendUrl}` : '\nBackend: Vercel (cloud)')
     );
     // Auto-test backend on startup
-    fetch(`${backendUrl}/api/status`, { headers: { 'ngrok-skip-browser-warning': '1' }, signal: AbortSignal.timeout(3000) })
+    const statusUrl = backendUrl ? `${backendUrl}/api/status` : '/api/gatra-local';
+    const statusOpts: RequestInit = backendUrl
+      ? { headers: { 'ngrok-skip-browser-warning': '1' }, signal: AbortSignal.timeout(3000) }
+      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status' }), signal: AbortSignal.timeout(3000) };
+    fetch(statusUrl, statusOpts)
       .then(r => r.json())
-      .then(d => this.addSystemMessage(`\u2705 Backend connected: ${d.total_alerts} alerts, ${d.blocked_ips} blocked IPs`))
+      .then(d => this.addSystemMessage(`\u2705 Backend connected: ${d.total_alerts ?? 0} alerts, ${d.total_blocked ?? d.blocked_ips ?? 0} blocked IPs`))
       .catch(() => {});
 
     // Bind PlaybookEngine callbacks
