@@ -3479,12 +3479,7 @@ export class SocChatPanel {
   // ── System messages from events ────────────────────────────────
 
   private setupEventListeners(): void {
-    window.addEventListener('gatra-early-warning-update', ((e: CustomEvent) => {
-      const { multiplier, activeMarkets } = e.detail as { multiplier: number; activeMarkets: number };
-      if (multiplier > 1.2) {
-        this.addSystemMessage(`Predictive Signals: Early warning elevated to \u00D7${multiplier.toFixed(1)}. ${activeMarkets} market(s) signaling.`);
-      }
-    }) as EventListener);
+    // Predictive Signals removed — not relevant for SOC Cyber variant
 
     window.addEventListener('gatra-cii-update', ((e: CustomEvent) => {
       const { country, ciiScore, delta, isActive } = e.detail as { country: string; ciiScore: number; delta: number; isActive: boolean };
