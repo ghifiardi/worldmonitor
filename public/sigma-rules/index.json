@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "rules": [
+    { "file": "c2-beaconing.yml", "id": "gatra-sigma-001", "level": "high", "status": "stable", "enabled": true },
+    { "file": "brute-force.yml", "id": "gatra-sigma-002", "level": "high", "status": "stable", "enabled": true },
+    { "file": "dns-tunneling.yml", "id": "gatra-sigma-003", "level": "high", "status": "stable", "enabled": true },
+    { "file": "lateral-movement.yml", "id": "gatra-sigma-004", "level": "medium", "status": "stable", "enabled": true },
+    { "file": "data-exfiltration.yml", "id": "gatra-sigma-005", "level": "high", "status": "stable", "enabled": true },
+    { "file": "suspicious-port.yml", "id": "gatra-sigma-006", "level": "medium", "status": "stable", "enabled": true },
+    { "file": "credential-access.yml", "id": "gatra-sigma-007", "level": "high", "status": "stable", "enabled": true },
+    { "file": "privilege-escalation.yml", "id": "gatra-sigma-008", "level": "medium", "status": "stable", "enabled": true },
+    { "file": "log-clearing.yml", "id": "gatra-sigma-009", "level": "high", "status": "stable", "enabled": true },
+    { "file": "phishing-delivery.yml", "id": "gatra-sigma-010", "level": "medium", "status": "stable", "enabled": true },
+    { "file": "exploit-kev.yml", "id": "gatra-sigma-011", "level": "high", "status": "stable", "enabled": true },
+    { "file": "recon-scanning.yml", "id": "gatra-sigma-012", "level": "medium", "status": "stable", "enabled": true }
+  ]
+}
