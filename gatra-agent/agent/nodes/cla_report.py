@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 
 from agent.audit import emit_audit
 from agent.llm import get_llm
@@ -17,7 +18,7 @@ Given the incident audit log and any executed containment actions, produce:
 Format as a concise compliance report suitable for auditors."""
 
 
-def cla_report_node(state: GatraState, config: dict) -> dict:
+def cla_report_node(state: GatraState, config: RunnableConfig) -> dict:
     """Generate compliance report from audit log and executed actions."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore

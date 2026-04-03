@@ -4,6 +4,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
+
 from agent.audit import emit_audit
 from agent.state import GatraState
 
@@ -135,7 +137,7 @@ def route_from_intent(intent: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def router_node(state: GatraState, config: dict) -> dict:
+def router_node(state: GatraState, config: RunnableConfig) -> dict:
     """Entry node — parses query, audits routing decision, sets _route."""
     intent = parse_intent(state.query)
     route = route_from_intent(intent)

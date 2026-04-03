@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from agent.audit import emit_audit
@@ -127,7 +128,7 @@ def _parse_llm_proposal(text: str) -> dict[str, Any]:
     }
 
 
-def cra_node(state: GatraState, config: dict) -> dict:
+def cra_node(state: GatraState, config: RunnableConfig) -> dict:
     """Propose, gate-evaluate, optionally interrupt for approval, then execute."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore

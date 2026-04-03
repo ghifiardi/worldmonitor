@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 
 from agent.audit import emit_audit
 from agent.llm import get_llm
@@ -17,7 +18,7 @@ Given alerts and anomaly scores, perform:
 Be precise — cite MITRE IDs. If attribution is uncertain, say so explicitly."""
 
 
-def taa_node(state: GatraState, config: dict) -> dict:
+def taa_node(state: GatraState, config: RunnableConfig) -> dict:
     """Map MITRE techniques, attribute actors, and prioritise for triage."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 
 from agent.audit import emit_audit
 from agent.llm import get_llm
@@ -17,7 +18,7 @@ Based on the incident context (alerts, triage results, executed actions), you:
 Always cite CVE IDs when referencing specific vulnerabilities."""
 
 
-def rva_node(state: GatraState, config: dict) -> dict:
+def rva_node(state: GatraState, config: RunnableConfig) -> dict:
     """Assess vulnerabilities and residual risk."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore

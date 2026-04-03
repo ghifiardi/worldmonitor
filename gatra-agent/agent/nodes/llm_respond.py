@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 
 from agent.llm import get_llm
 from agent.state import GatraState
@@ -14,7 +15,7 @@ Be concise, precise, and always ground your answers in current threat intelligen
 When uncertain, say so — never fabricate CVE IDs, MITRE technique IDs, or threat actor attributions."""
 
 
-def llm_respond_node(state: GatraState, config: dict) -> dict:
+def llm_respond_node(state: GatraState, config: RunnableConfig) -> dict:
     """Answer general SOC questions using the LLM."""
     llm = get_llm()
     messages = [SystemMessage(content=_SYSTEM_PROMPT)]
