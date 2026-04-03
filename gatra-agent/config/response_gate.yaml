@@ -1,0 +1,42 @@
+environment: dev
+dry_run: false
+
+actions:
+  notify:
+    mode: auto
+  unblock:
+    mode: auto
+  resume:
+    mode: auto
+  suspend:
+    mode: conditional
+    min_severity: HIGH
+    min_confidence: 0.80
+    min_role: responder
+  block:
+    mode: conditional
+    feature_flag: auto_block
+    min_severity: CRITICAL
+    min_confidence: 0.90
+    min_role: responder
+  kill:
+    mode: conditional
+    feature_flag: auto_kill
+    min_severity: CRITICAL
+    min_confidence: 0.95
+    min_role: approver
+  isolate:
+    mode: approval_required
+    min_role: approver
+
+overrides:
+  crown_jewel_assets:
+    mode: approval_required
+    asset_tags: ["core-router", "dns-primary", "hss", "pcrf", "pgw"]
+  maintenance_window:
+    enabled: false
+    schedule: null
+
+approval:
+  expiry_seconds: 300
+  allow_reapproval: false
