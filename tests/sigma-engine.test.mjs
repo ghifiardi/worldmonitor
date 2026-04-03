@@ -1,6 +1,8 @@
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
 import { normalizeEvent, loadRules, loadAssets, resolveAsset, evaluateModifier, matchEvent } from '../src/services/sigma-engine.ts';
+import { readFileSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 test('normalizeEvent: passes through canonical fields unchanged', () => {
   const event = { src_ip: '10.0.0.1', dst_ip: '10.0.0.2', port: 443 };
@@ -489,4 +491,302 @@ test('matchEvent: asset-derived recommendations are included', () => {
   assert.ok(matches[0].recommendations.includes('Investigate'));
   assert.ok(matches[0].recommendations.some(r => r.includes('CVE-2025-20188')));
   assert.ok(matches[0].recommendations.some(r => r.includes('Firmware upgrade')));
+});
+
+// ── Task 9: Golden Tests — One match + one no-match per rule ────
+
+const RULES_DIR = resolve(import.meta.dirname, '..', 'public', 'sigma-rules');
+
+function loadAllRules() {
+  const files = readdirSync(RULES_DIR).filter(f => f.endsWith('.yml'));
+  return loadRules(files.map(f => readFileSync(resolve(RULES_DIR, f), 'utf-8')));
+}
+
+function loadFullAssets() {
+  return loadAssets(readFileSync(resolve(RULES_DIR, 'assets.json'), 'utf-8'));
+}
+
+// gatra-sigma-001: C2 Beaconing — direction=outbound, duration>=60, critical+KEV asset
+// TELCO-CORE-JKT-01 is critical + has KEV CVE-2025-20188
+test('golden gatra-sigma-001: MATCH — outbound beacon from KEV critical asset', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-001');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { direction: 'outbound', duration: 120, host_id: 'TELCO-CORE-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-001: NO MATCH — outbound but duration too short', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-001');
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { direction: 'outbound', duration: 30, host_id: 'TELCO-CORE-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-002: Brute Force — action contains "login", event_type=authentication, asset CVSS>=8.0
+// TELCO-AUTH-JKT-01 has CVE-2025-21756 cvss=8.8 and CVE-2025-22354 cvss=8.1
+test('golden gatra-sigma-002: MATCH — login auth event on high-CVSS asset', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-002');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { action: 'login_failed', event_type: 'authentication', host_id: 'TELCO-AUTH-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-002: NO MATCH — login event on asset with no high-CVSS CVE', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-002');
+  const assets = loadFullAssets();
+  // TELCO-SIEM-JKT-01 has no CVEs at all
+  const matches = matchEvent(
+    { action: 'login_failed', event_type: 'authentication', host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-003: DNS Tunneling — protocol=dns, bytes_sent>=5000
+// No asset check required for this rule
+test('golden gatra-sigma-003: MATCH — dns protocol with high bytes_sent', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-003');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { protocol: 'dns', bytes_sent: 8000, host_id: 'TELCO-DNS-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-003: NO MATCH — dns protocol but bytes_sent below threshold', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-003');
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { protocol: 'dns', bytes_sent: 1000, host_id: 'TELCO-DNS-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-004: Lateral Movement — direction=internal, host_id on core zone asset
+// TELCO-CORE-JKT-01 is in core zone
+test('golden gatra-sigma-004: MATCH — internal traffic to core zone asset', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-004');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { direction: 'internal', host_id: 'TELCO-CORE-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-004: NO MATCH — internal traffic but asset is not in core zone', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-004');
+  const assets = loadFullAssets();
+  // TELCO-SIEM-JKT-01 is in management zone
+  const matches = matchEvent(
+    { direction: 'internal', host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-005: Data Exfiltration — direction=outbound, bytes_sent>=1000000, critical asset
+// TELCO-CORE-JKT-01 is critical
+test('golden gatra-sigma-005: MATCH — large outbound transfer from critical asset', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-005');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { direction: 'outbound', bytes_sent: 5000000, host_id: 'TELCO-CORE-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-005: NO MATCH — large outbound transfer but from non-critical asset', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-005');
+  const assets = loadFullAssets();
+  // TELCO-SIEM-JKT-01 is medium criticality
+  const matches = matchEvent(
+    { direction: 'outbound', bytes_sent: 5000000, host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-006: Suspicious Port — dst_port>=10000, firmware-outdated asset
+// TELCO-CORE-JKT-01 has firmware_upgrade_required=true
+test('golden gatra-sigma-006: MATCH — high dst_port on firmware-outdated device', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-006');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { dst_port: 31337, host_id: 'TELCO-CORE-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-006: NO MATCH — high dst_port but firmware is current', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-006');
+  const assets = loadFullAssets();
+  // TELCO-SIEM-JKT-01 has firmware_upgrade_required=false
+  const matches = matchEvent(
+    { dst_port: 31337, host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-007: Credential Access — action contains "credential" or "dump", patch_status=behind
+// TELCO-CORE-JKT-01 is patch_status=behind
+test('golden gatra-sigma-007: MATCH — credential dump on behind-patch system', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-007');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { action: 'lsass_dump', host_id: 'TELCO-CORE-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-007: NO MATCH — credential action on patched system', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-007');
+  const assets = loadFullAssets();
+  // TELCO-SIEM-JKT-01 is patch_status=current
+  const matches = matchEvent(
+    { action: 'credential_access', host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-008: Privilege Escalation — action contains "sudo" or "runas" or "escalat"
+// No asset filter — any asset matches
+test('golden gatra-sigma-008: MATCH — sudo action triggers privilege escalation rule', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-008');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { action: 'sudo_exec', host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-008: NO MATCH — unrelated action does not trigger escalation rule', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-008');
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { action: 'file_read', host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-009: Log Clearing — action contains "clear"/"delete", event_type contains "log", firmware-outdated
+// TELCO-CORE-JKT-01 has firmware_upgrade_required=true
+test('golden gatra-sigma-009: MATCH — log deletion on firmware-outdated device', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-009');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { action: 'clear_logs', event_type: 'syslog', host_id: 'TELCO-CORE-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-009: NO MATCH — log deletion but firmware is current', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-009');
+  const assets = loadFullAssets();
+  // TELCO-SIEM-JKT-01 has firmware_upgrade_required=false
+  const matches = matchEvent(
+    { action: 'clear_logs', event_type: 'syslog', host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-010: Phishing — action contains "click", details contains "http", core zone asset
+// TELCO-CORE-JKT-01 is in core zone
+test('golden gatra-sigma-010: MATCH — http click from core zone host', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-010');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { action: 'click', details: 'http://phishing.example.com', host_id: 'TELCO-CORE-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-010: NO MATCH — click event but host is not in core zone', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-010');
+  const assets = loadFullAssets();
+  // TELCO-SIEM-JKT-01 is in management zone
+  const matches = matchEvent(
+    { action: 'click', details: 'http://phishing.example.com', host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-011: Exploit KEV — event_type=exploit, asset with KEV
+// TELCO-CORE-JKT-01 has KEV CVE-2025-20188; TELCO-FW-SBY-01 has KEV CVE-2025-32756
+test('golden gatra-sigma-011: MATCH — exploit event on KEV-listed asset', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-011');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { event_type: 'exploit', host_id: 'TELCO-FW-SBY-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-011: NO MATCH — exploit event but asset has no KEV CVE', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-011');
+  const assets = loadFullAssets();
+  // TELCO-SIEM-JKT-01 has no CVEs
+  const matches = matchEvent(
+    { event_type: 'exploit', host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
+});
+
+// gatra-sigma-012: Recon Scanning — action contains "scan", patch_status=behind
+// TELCO-CORE-JKT-01 is patch_status=behind
+test('golden gatra-sigma-012: MATCH — scan action on patch-behind host', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-012');
+  assert.equal(rules.length, 1);
+  const assets = loadFullAssets();
+  const matches = matchEvent(
+    { action: 'port_scan', host_id: 'TELCO-CORE-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 1);
+});
+
+test('golden gatra-sigma-012: NO MATCH — scan action but host is fully patched', () => {
+  const rules = loadAllRules().filter(r => r.id === 'gatra-sigma-012');
+  const assets = loadFullAssets();
+  // TELCO-SIEM-JKT-01 is patch_status=current
+  const matches = matchEvent(
+    { action: 'port_scan', host_id: 'TELCO-SIEM-JKT-01' },
+    rules, assets,
+  );
+  assert.equal(matches.length, 0);
 });
