@@ -1,0 +1,46 @@
+title: Phishing Click from High-Privilege Zone
+id: gatra-sigma-010
+status: stable
+description: >
+  Detects a user in the core network zone clicking on a URL — a potential indicator of
+  successful phishing link delivery. Phishing targeting operators who have access to core
+  network infrastructure (routers, auth servers) is particularly dangerous, as credential
+  theft could lead to direct manipulation of routing tables or subscriber authentication systems.
+logsource:
+  category: web_proxy
+  product: proxy
+detection:
+  phishing_click:
+    action|contains: click
+    details|contains: http
+  core_zone_user:
+    host_id|asset_zone: core
+  condition: phishing_click and core_zone_user
+fields:
+  - host_id
+  - user
+  - action
+  - details
+  - dst_ip
+  - url
+  - referrer
+  - user_agent
+falsepositives:
+  - Legitimate web browsing from operational workstations in the core zone
+  - Security awareness training simulation clicks (phishing exercises)
+  - Monitoring dashboards generating HTTP click telemetry
+level: medium
+tags:
+  - attack.initial_access
+  - attack.t1566
+  - attack.t1566.002
+  - attack.t1204.001
+gatra_agent: phishing_detection_agent
+mitre_technique: T1566.002
+kill_chain_phase: delivery
+recommended_actions:
+  - Immediately scan the clicked URL against threat intelligence feeds
+  - Block the destination URL at the web proxy for all users
+  - Interview the user to understand the context of the click
+  - Check for credential submission following the click event
+  - Enforce URL filtering policy that blocks suspicious external links from core zone hosts

@@ -1,0 +1,45 @@
+title: Recon Scanning of Patch-Behind Hosts
+id: gatra-sigma-012
+status: stable
+description: >
+  Detects network reconnaissance scanning activity targeting hosts with a patch status of 'behind'.
+  Adversaries often perform targeted scanning to identify vulnerable services on unpatched systems
+  before launching exploit attempts. Scanning activity against patch-behind telco infrastructure
+  suggests an attacker is profiling the network for exploitable entry points.
+logsource:
+  category: network_flow
+  product: ids
+detection:
+  scan_activity:
+    action|contains: scan
+  vulnerable_target:
+    host_id|asset_patch_status: behind
+  condition: scan_activity and vulnerable_target
+fields:
+  - host_id
+  - src_ip
+  - dst_ip
+  - dst_port
+  - action
+  - scan_type
+  - packet_count
+  - direction
+falsepositives:
+  - Authorized vulnerability scanning from approved scanner IP ranges (Nessus, Qualys)
+  - NOC-initiated network discovery during maintenance windows
+  - SIEM asset discovery agents performing periodic inventory scans
+level: medium
+tags:
+  - attack.reconnaissance
+  - attack.discovery
+  - attack.t1595
+  - attack.t1046
+gatra_agent: recon_detection_agent
+mitre_technique: T1595.002
+kill_chain_phase: reconnaissance
+recommended_actions:
+  - Identify the scanning source and verify it is an authorized scanner
+  - If unauthorized, block the source IP at perimeter and edge firewalls
+  - Accelerate patching schedule for the targeted patch-behind hosts
+  - Review IDS alerts for follow-on exploit attempts from the same source
+  - Add the scanning source to threat watchlist for 30 days

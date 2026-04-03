@@ -1,0 +1,44 @@
+title: Lateral Movement Toward Core Zone
+id: gatra-sigma-004
+status: stable
+description: >
+  Detects internal lateral movement activity directed at assets located in the core network zone.
+  Adversaries who have gained a foothold in edge or management zones may attempt to pivot toward
+  the core zone to access critical routing infrastructure, subscriber data, or authentication
+  systems within the Indosat Ooredoo Hutchison network.
+logsource:
+  category: network_flow
+  product: firewall
+detection:
+  lateral_traffic:
+    direction: internal
+  core_zone_target:
+    host_id|asset_zone: core
+  condition: lateral_traffic and core_zone_target
+fields:
+  - host_id
+  - src_ip
+  - dst_ip
+  - dst_port
+  - direction
+  - protocol
+  - action
+falsepositives:
+  - Legitimate network management traffic from NOC workstations
+  - Authorized inter-zone connectivity for monitoring systems
+  - Scheduled backup operations from management zone to core
+level: medium
+tags:
+  - attack.lateral_movement
+  - attack.t1021
+  - attack.t1021.004
+  - attack.t1570
+gatra_agent: lateral_movement_agent
+mitre_technique: T1021.004
+kill_chain_phase: lateral-movement
+recommended_actions:
+  - Review the source of the internal traffic and verify authorization
+  - Check if the source host is compromised by cross-referencing with other alerts
+  - Enforce micro-segmentation rules between network zones
+  - Verify traffic against approved change management records
+  - Increase monitoring on core zone assets for follow-on activity

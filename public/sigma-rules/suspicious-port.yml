@@ -1,0 +1,45 @@
+title: Suspicious Port on Firmware-Outdated Device
+id: gatra-sigma-006
+status: stable
+description: >
+  Detects connections to high-numbered destination ports (above 10000) on devices with outdated
+  firmware. Attackers frequently leverage unpatched firmware vulnerabilities to open backdoor
+  listeners on non-standard ports. This combination — a high ephemeral port with outdated
+  firmware — is a strong indicator of post-exploitation activity.
+logsource:
+  category: network_flow
+  product: firewall
+detection:
+  high_port:
+    dst_port|gte: 10000
+  outdated_device:
+    host_id|asset_firmware_outdated: true
+  condition: high_port and outdated_device
+fields:
+  - host_id
+  - src_ip
+  - dst_ip
+  - dst_port
+  - src_port
+  - protocol
+  - direction
+  - bytes_sent
+falsepositives:
+  - Legitimate network management applications using high-numbered ports
+  - Authorized VPN concentrators using non-standard port assignments
+  - Customer CPE management protocols operating above port 10000
+level: medium
+tags:
+  - attack.command_and_control
+  - attack.persistence
+  - attack.t1571
+  - attack.t1205
+gatra_agent: port_anomaly_agent
+mitre_technique: T1571
+kill_chain_phase: command-and-control
+recommended_actions:
+  - Verify whether the high port is an authorized service by reviewing network diagrams
+  - Prioritize firmware upgrade for the affected device
+  - Block the suspicious port at the perimeter firewall pending investigation
+  - Run a port scan baseline against the device to identify all open listeners
+  - Escalate to NOC for emergency maintenance window if port is unauthorized

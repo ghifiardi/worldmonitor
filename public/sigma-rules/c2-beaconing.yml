@@ -1,0 +1,46 @@
+title: C2 Beaconing to Unpatched Critical Asset
+id: gatra-sigma-001
+status: stable
+description: >
+  Detects outbound network beaconing patterns from a critical-rated asset that has at least one
+  Known Exploited Vulnerability (KEV) listed. Long-duration outbound flows from unpatched critical
+  infrastructure may indicate an active command-and-control channel established post-exploitation.
+logsource:
+  category: network_flow
+  product: firewall
+detection:
+  network_filter:
+    direction: outbound
+    duration|gte: 60
+  asset_filter:
+    host_id|asset_criticality: critical
+    host_id|asset_kev: true
+  condition: network_filter and asset_filter
+fields:
+  - host_id
+  - src_ip
+  - dst_ip
+  - dst_port
+  - duration
+  - bytes_sent
+  - bytes_received
+  - direction
+falsepositives:
+  - Legitimate long-running management tunnels (SSH, SNMP polling)
+  - Authorized monitoring agents with persistent connections
+  - NTP synchronization streams
+level: high
+tags:
+  - attack.command_and_control
+  - attack.t1071
+  - attack.t1095
+  - attack.t1571
+gatra_agent: c2_detection_agent
+mitre_technique: T1071.001
+kill_chain_phase: command-and-control
+recommended_actions:
+  - Isolate the affected asset from the network immediately
+  - Capture full packet data for the suspicious flow
+  - Review KEV vulnerability status and apply emergency patch
+  - Conduct forensic analysis of the asset for signs of compromise
+  - Notify CISO and initiate IR playbook IOH-IR-C2-001
