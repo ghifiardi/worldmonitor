@@ -33,8 +33,8 @@ export function AnalystConsole() {
         <header className="flex items-center justify-between border-b border-gray-800 px-6 py-3">
           <h1 className="text-lg font-semibold">GATRA Analyst Console</h1>
           <div className="flex items-center gap-2 text-sm text-gray-400">
-            <span className={`h-2 w-2 rounded-full ${state.pipeline_stage === "idle" ? "bg-gray-600" : "animate-pulse bg-green-400"}`} />
-            {state.pipeline_stage}
+            <span className={`h-2 w-2 rounded-full ${(state?.pipeline_stage ?? "idle") === "idle" ? "bg-gray-600" : "animate-pulse bg-green-400"}`} />
+            {state?.pipeline_stage ?? "idle"}
           </div>
         </header>
         <div className="flex-1 overflow-hidden">
@@ -46,9 +46,9 @@ export function AnalystConsole() {
         </div>
       </div>
       <aside className="w-72 space-y-3 overflow-y-auto border-l border-gray-800 p-4">
-        <AgentHealth currentAgent={state.current_agent} pipelineStage={state.pipeline_stage} />
-        <IncidentTimeline auditLog={state.audit_log} />
-        <ActiveAlerts alerts={state.alerts} />
+        <AgentHealth currentAgent={state?.current_agent ?? ""} pipelineStage={state?.pipeline_stage ?? "idle"} />
+        <IncidentTimeline auditLog={state?.audit_log ?? []} />
+        <ActiveAlerts alerts={state?.alerts ?? []} />
       </aside>
     </div>
   );

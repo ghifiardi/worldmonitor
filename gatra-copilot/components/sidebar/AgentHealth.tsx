@@ -8,7 +8,7 @@ export function AgentHealth({ currentAgent, pipelineStage }: AgentHealthProps) {
       <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">Agent Health</h3>
       <div className="space-y-1">
         {AGENTS.map((agent) => {
-          const isActive = currentAgent.toUpperCase() === agent;
+          const isActive = (currentAgent ?? "").toUpperCase() === agent;
           return (
             <div key={agent} className="flex items-center gap-2 text-sm">
               <span className={`h-2 w-2 rounded-full ${isActive ? "animate-pulse bg-green-400" : "bg-gray-600"}`} />
