@@ -1,7 +1,7 @@
 # GATRA CopilotKit + LangGraph Analyst Console
 
 **Date:** 2026-04-03
-**Status:** Approved (rev 2 — hardened per review)
+**Status:** Approved (rev 3 — final polish per review)
 **Author:** Ghifi + Claude
 
 ## Overview
@@ -76,7 +76,7 @@ The existing worldmonitor codebase remains untouched. The Python backend calls e
 
 ## Authentication & RBAC
 
-Deferred from v1 implementation but **mandatory for pilot hardening**. The design must support these controls from day one even if enforcement is initially permissive.
+Full SSO/RBAC enforcement is not required for local development, but identity propagation, signed service auth, and audit attribution are **mandatory for pilot deployment**. Full enforcement becomes mandatory for hardened production rollout. The design supports these controls from day one even if enforcement is initially permissive.
 
 ### Role Model
 
@@ -132,10 +132,10 @@ class Alert(BaseModel):
     mitre_name: str
     description: str
     confidence: float                    # 0.0–1.0
-    lat: float
-    lon: float
-    location_name: str
-    infrastructure: str
+    lat: float | None = None             # optional — not all alerts are geolocated
+    lon: float | None = None
+    location_name: str | None = None
+    infrastructure: str | None = None
     timestamp: datetime
     agent: Literal["ADA", "TAA", "CRA", "CLA", "RVA"]
 
@@ -185,7 +185,9 @@ class ExecutedAction(BaseModel):
     success: bool
     error: str | None = None
     executed_at: datetime
-    executed_by: str                     # user_id who approved
+    approved_by: str                     # user_id who approved
+    executed_by: str                     # user_id or service principal who ran it
+    execution_actor_type: Literal["system", "human"] = "system"
     execution_mode: Literal["dry_run", "enforced"]
     rollback_available: bool
     idempotency_key: str
@@ -199,6 +201,24 @@ class VulnerabilityContext(BaseModel):
     cisa_kev: bool                       # in CISA Known Exploited Vulnerabilities
     recommendation: str
 
+class PolicyDecision(BaseModel):
+    """Logged when the response gate evaluates an action."""
+    action_type: str
+    policy_mode: str                     # auto|conditional|approval_required
+    matched_rule: str                    # which config rule matched
+    override_applied: str | None = None  # e.g. "crown_jewel_assets"
+    min_role_required: str
+    decision: Literal["auto_approved", "requires_approval", "denied_by_policy"]
+    reason: str                          # human-readable explanation
+
+class StateError(BaseModel):
+    code: str
+    message: str
+    retryable: bool = False
+    source: str                          # node or tool name
+    timestamp: datetime
+    details: dict | None = None
+
 class AuditEntry(BaseModel):
     id: str
     timestamp: datetime
@@ -208,13 +228,16 @@ class AuditEntry(BaseModel):
         "routing_start", "alert_fetched", "triage_completed",
         "action_proposed", "approval_requested", "approval_granted",
         "approval_denied", "execution_succeeded", "execution_failed",
-        "vulnerability_assessed", "compliance_checked"
+        "vulnerability_assessed", "compliance_checked",
+        "policy_evaluated"
     ]
     agent: str
     actor: str | None = None             # user_id if human-initiated
     summary: str
     details: dict | None = None
     compliance_frameworks: list[str] = []
+    # policy_evaluated fields (populated when event_type == "policy_evaluated")
+    policy_decision: PolicyDecision | None = None
 ```
 
 ### State Schema
@@ -260,7 +283,7 @@ class GatraState(CopilotKitState):
     current_agent: str = ""
     pipeline_stage: str = "idle"         # idle|detecting|triaging|responding|assessing|logging
     last_updated_at: datetime | None = None
-    errors: list[dict] = []
+    errors: list[StateError] = []
 ```
 
 ### State Ownership & Merge Rules
@@ -295,6 +318,11 @@ START → router_node
     - compliance/audit intent → CLA report node
     - compound intent → first relevant node (graph continues via edges)
     - general question → llm_respond (direct LLM answer)
+
+  Safety rule: if action_requested is detected but routing confidence < 0.7,
+  do NOT route directly to CRA/execution path. Instead route to TAA for
+  safe summary/clarification. A misrouted containment request is far worse
+  than a misrouted summary request.
 
 ADA → TAA (by default for prioritized detections requiring analyst interpretation;
            low-confidence noise below threshold skips to END with summary)
@@ -404,7 +432,8 @@ Clarifies what the LLM can and cannot do autonomously:
 | **Model-assisted interpretation** | `detect_anomalies`, `analyze_threat`, `assess_vulnerability` | Advisory — confidence-bearing, not binding |
 | **Decision recommendation** | `propose_action` | Non-binding — always requires policy gate check |
 | **Deterministic execution** | `execute_action` | Authoritative after policy gate + approval |
-| **Compliance advisory** | `check_compliance`, `log_audit` | Advisory — not authoritative for regulatory purposes |
+| **Audit persistence** | `log_audit` | Deterministic — nodes create structured `AuditEntry` payloads, `log_audit` persists them as-is without LLM transformation |
+| **Compliance advisory** | `check_compliance` | Advisory — not authoritative for regulatory purposes |
 
 Key principle: **The LLM recommends, the policy gate decides, the analyst approves, the system executes.** No LLM output directly triggers a destructive action.
 
@@ -441,14 +470,14 @@ Key principle: **The LLM recommends, the policy gate decides, the analyst approv
 | `MitreCard` | TAA `analyze_threat` tool | Kill chain phase, actor attribution, campaign, IOC list | Markdown: technique, attribution, IOCs as bullet list |
 | `VulnCard` | RVA `assess_vulnerability` tool | CVE ID, CVSS v4 score, EPSS percentile, affected products, patch status | Markdown: CVE ID, scores, patch status |
 | `AuditCard` | CLA `log_audit` tool | Audit entry, regulatory framework tags, timestamp | Markdown: event type, timestamp, summary |
-| `ActionResultCard` | CRA `execute_action` tool | Action taken, target, success/failure, execution time, rollback available | Markdown: action, result, target |
+| `ActionResultCard` | CRA `execute_action` tool | Action taken, target, success/failure, execution time, rollback available, dry-run/enforced | Markdown: action, result, target, execution mode, rollback status |
 
 Every component defines:
 - **Structured payload schema** (Zod on frontend, Pydantic on backend)
 - **Loading/skeleton state** while tool is executing
 - **Empty state** when no data
 - **Fallback markdown renderer** if the React component fails to render or payload is malformed
-- **PII redaction:** Hostnames and IPs shown in full; user identifiers shown as role + last 4 chars
+- **PII redaction:** Hostnames and IPs may be shown in full for authorized internal analysts; user identifiers are masked by default (role + last 4 chars). Redaction policy is configurable per environment.
 
 ### Human-in-the-Loop
 
@@ -492,7 +521,7 @@ Reads `agent.state` via `useAgent` hook and renders three persistent widgets:
 | `scan_yara` | CRA | `/api/response-actions` | Deterministic enrichment | YARA malware scan |
 | `lookup_cves` | RVA | `/api/cisa-kev` | Deterministic enrichment | CISA KEV + CVE enrichment |
 | `assess_vulnerability` | RVA | LLM reasoning over CVE data | Model-assisted advisory | CVSS/EPSS interpretation, patch priority |
-| `log_audit` | CLA | Structured output | Deterministic | Persist audit entry (generates, does not merely advise) |
+| `log_audit` | CLA | Structured persistence | Deterministic | Persist pre-built `AuditEntry` — no LLM involved, nodes create the payload |
 | `check_compliance` | CLA | LLM reasoning | Advisory, not authoritative | Flag potential regulatory concerns |
 
 All tools calling Vercel endpoints use `httpx.AsyncClient` with:
@@ -509,6 +538,7 @@ All tools calling Vercel endpoints use `httpx.AsyncClient` with:
 - Sessions are **per analyst, per browser tab**
 - Each session gets a unique `session_id` and `trace_id`
 - An `incident_id` is attached once an alert or case is selected
+- **Reconnection:** If the browser tab is refreshed or SSE reconnects, the frontend attempts to resume the existing session via `session_id` stored in sessionStorage. If the checkpoint exists, state and pending approvals are restored. If not (e.g., backend restarted without checkpoint), a fresh session begins.
 
 ### Persistence Layers
 
@@ -531,7 +561,7 @@ All tools calling Vercel endpoints use `httpx.AsyncClient` with:
 Even without multi-user collaboration:
 - **Duplicate tab:** Same analyst, same incident — second tab gets a new session. Actions use `idempotency_key` to prevent duplicate execution.
 - **Multiple analysts, same target:** `target_fingerprint` verification before execution catches conflicts. If another analyst already acted on the target, the fingerprint won't match and the action is aborted with an explanation.
-- **One-time approval:** Approval tokens are consumed on use. Re-submitting a consumed approval is a no-op.
+- **One-time approval:** Approval tokens are consumed on use. Re-submitting a consumed approval is a no-op. Each token is bound to: `action_id` + `session_id` + `user_id` + `expires_at` + `target_fingerprint` hash. This prevents replay across sessions or after target state changes.
 
 ## Observability
 
@@ -561,8 +591,9 @@ All logs are JSON-structured with fields:
 ### Health & Readiness
 
 `gatra-agent` exposes:
-- `GET /health` — liveness check (process running)
-- `GET /ready` — readiness check (LLM provider reachable, Vercel endpoints reachable)
+- `GET /health` — liveness check (process alive)
+- `GET /ready` — readiness check (core routing operational + checkpoint store connected + at least one configured LLM provider reachable). Does NOT require all Vercel enrichment endpoints to be healthy — those degrade gracefully.
+- `GET /dependencies` — detailed sub-checks for each Vercel endpoint, threat feed, LLM provider. For dashboards/debugging, not load balancer gating.
 
 ## Failure Modes & Error Handling
 
@@ -709,7 +740,7 @@ npm run dev  # port 3000
 | Component | Platform | Reason |
 |-----------|----------|--------|
 | `gatra-copilot` | Vercel | Next.js native, same org as worldmonitor |
-| `gatra-agent` | Fly.io or Railway | Long-running Python process needs persistent connections for LangGraph state + SSE streaming. Must support health check + readiness endpoints. Sessions may require sticky routing or checkpoint-based resumability. |
+| `gatra-agent` | Fly.io or Railway | Long-running Python process needed for LangGraph execution, checkpoint-backed session resumability, and low-latency streaming-compatible request handling. Must support health/readiness endpoints. Sessions may require sticky routing or checkpoint-based resumability. |
 
 ### LLM Provider Configuration
 
@@ -731,10 +762,16 @@ def get_llm(provider: str | None = None):
         case _:
             raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
 
+class LLMProviderUnavailableError(Exception):
+    """Retryable provider errors — timeouts, rate limits, temporary outages."""
+    pass
+
 def get_llm_with_fallback():
     try:
         return get_llm()
-    except Exception:
+    except LLMProviderUnavailableError:
+        # Only fallback on transient errors (timeout, rate limit, 5xx)
+        # Config errors (invalid API key, bad model name) must fail loudly
         fallback = os.getenv("LLM_FALLBACK_PROVIDER")
         if fallback:
             return get_llm(fallback)
