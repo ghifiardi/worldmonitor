@@ -18,7 +18,7 @@ Given the incident audit log and any executed containment actions, produce:
 Format as a concise compliance report suitable for auditors."""
 
 
-def cla_report_node(state: GatraState, config: RunnableConfig) -> dict:
+async def cla_report_node(state: GatraState, config: RunnableConfig) -> dict:
     """Generate compliance report from audit log and executed actions."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
@@ -48,7 +48,7 @@ def cla_report_node(state: GatraState, config: RunnableConfig) -> dict:
         ),
     ]
     llm = get_llm()
-    response = llm.invoke(messages)
+    response = await llm.ainvoke(messages)
 
     updated_state = emit_audit(
         state,

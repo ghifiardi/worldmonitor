@@ -17,7 +17,7 @@ key indicators, and whether immediate triage is required.
 Be concise — one paragraph per alert maximum."""
 
 
-def ada_node(state: GatraState, config: RunnableConfig) -> dict:
+async def ada_node(state: GatraState, config: RunnableConfig) -> dict:
     """Fetch alerts and score anomalies with the LLM."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
@@ -25,12 +25,9 @@ def ada_node(state: GatraState, config: RunnableConfig) -> dict:
     except Exception:
         pass
 
-    # Invoke fetch_alerts tool (sync wrapper for LangGraph context)
+    # Invoke fetch_alerts tool asynchronously
     try:
-        import asyncio
-        raw = asyncio.get_event_loop().run_until_complete(
-            fetch_alerts.ainvoke({"severity": "all", "limit": 20})
-        )
+        raw = await fetch_alerts.ainvoke({"severity": "all", "limit": 20})
     except Exception as exc:
         raw = {"error": str(exc), "alerts": []}
 
@@ -48,7 +45,7 @@ def ada_node(state: GatraState, config: RunnableConfig) -> dict:
         SystemMessage(content=_SYSTEM_PROMPT),
         HumanMessage(content=f"Analyze the following alert data and assign anomaly scores:\n\n{context}"),
     ]
-    response = llm.invoke(messages)
+    response = await llm.ainvoke(messages)
 
     return {
         "current_agent": "ada",

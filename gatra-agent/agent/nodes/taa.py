@@ -18,7 +18,7 @@ Given alerts and anomaly scores, perform:
 Be precise — cite MITRE IDs. If attribution is uncertain, say so explicitly."""
 
 
-def taa_node(state: GatraState, config: RunnableConfig) -> dict:
+async def taa_node(state: GatraState, config: RunnableConfig) -> dict:
     """Map MITRE techniques, attribute actors, and prioritise for triage."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
@@ -42,7 +42,7 @@ def taa_node(state: GatraState, config: RunnableConfig) -> dict:
         ),
     ]
     llm = get_llm()
-    response = llm.invoke(messages)
+    response = await llm.ainvoke(messages)
 
     updated_state = emit_audit(
         state,

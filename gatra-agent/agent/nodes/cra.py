@@ -128,7 +128,7 @@ def _parse_llm_proposal(text: str) -> dict[str, Any]:
     }
 
 
-def cra_node(state: GatraState, config: RunnableConfig) -> dict:
+async def cra_node(state: GatraState, config: RunnableConfig) -> dict:
     """Propose, gate-evaluate, optionally interrupt for approval, then execute."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
@@ -146,14 +146,14 @@ def cra_node(state: GatraState, config: RunnableConfig) -> dict:
     ) or "No structured triage. Use query context."
 
     llm = get_llm()
-    proposal_text = llm.invoke([
+    proposal_text = (await llm.ainvoke([
         SystemMessage(content=_SYSTEM_PROMPT),
         HumanMessage(content=(
             f"Query: {state.query}\n\n"
             f"Triage results:\n{triage_summary}\n\n"
             "Propose the most appropriate containment action as JSON."
         )),
-    ]).content
+    ])).content
 
     proposal = _parse_llm_proposal(str(proposal_text))
 
@@ -290,17 +290,14 @@ def cra_node(state: GatraState, config: RunnableConfig) -> dict:
         updated_state3 = updated_state
 
     # --- 5. Execute action ---
-    import asyncio
     idempotency_key = f"{proposed_action.target_fingerprint}-{proposed_action.action_id}"
     try:
-        exec_result = asyncio.get_event_loop().run_until_complete(
-            execute_action.ainvoke({
-                "action_type": action_type,
-                "target_type": target_type,
-                "target_value": target_value,
-                "idempotency_key": idempotency_key,
-            })
-        )
+        exec_result = await execute_action.ainvoke({
+            "action_type": action_type,
+            "target_type": target_type,
+            "target_value": target_value,
+            "idempotency_key": idempotency_key,
+        })
         success = exec_result.get("success", True)
         error: str | None = exec_result.get("error")
     except Exception as exc:

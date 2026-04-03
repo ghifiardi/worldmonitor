@@ -137,7 +137,7 @@ def route_from_intent(intent: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def router_node(state: GatraState, config: RunnableConfig) -> dict:
+async def router_node(state: GatraState, config: RunnableConfig) -> dict:
     """Entry node — parses query, audits routing decision, sets _route."""
     intent = parse_intent(state.query)
     route = route_from_intent(intent)

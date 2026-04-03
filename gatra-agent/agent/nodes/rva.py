@@ -18,7 +18,7 @@ Based on the incident context (alerts, triage results, executed actions), you:
 Always cite CVE IDs when referencing specific vulnerabilities."""
 
 
-def rva_node(state: GatraState, config: RunnableConfig) -> dict:
+async def rva_node(state: GatraState, config: RunnableConfig) -> dict:
     """Assess vulnerabilities and residual risk."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
@@ -48,7 +48,7 @@ def rva_node(state: GatraState, config: RunnableConfig) -> dict:
         ),
     ]
     llm = get_llm()
-    response = llm.invoke(messages)
+    response = await llm.ainvoke(messages)
 
     updated_state = emit_audit(
         state,

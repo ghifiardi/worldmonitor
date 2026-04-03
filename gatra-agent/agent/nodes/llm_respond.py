@@ -15,7 +15,7 @@ Be concise, precise, and always ground your answers in current threat intelligen
 When uncertain, say so — never fabricate CVE IDs, MITRE technique IDs, or threat actor attributions."""
 
 
-def llm_respond_node(state: GatraState, config: RunnableConfig) -> dict:
+async def llm_respond_node(state: GatraState, config: RunnableConfig) -> dict:
     """Answer general SOC questions using the LLM."""
     llm = get_llm()
     messages = [SystemMessage(content=_SYSTEM_PROMPT)]
@@ -24,7 +24,7 @@ def llm_respond_node(state: GatraState, config: RunnableConfig) -> dict:
     else:
         messages.append(HumanMessage(content=state.query or "Hello, I need SOC assistance."))
 
-    response = llm.invoke(messages)
+    response = await llm.ainvoke(messages)
 
     return {
         "current_agent": "llm_respond",
