@@ -98,8 +98,9 @@ Full SSO/RBAC enforcement is not required for local development, but identity pr
 
 ### Implementation Path
 
-- **Phase 0 (pilot):** SSO or trusted reverse-proxy auth in front of `gatra-copilot`. Signed HMAC service-to-service token between Next.js runtime and `gatra-agent`. Role passed as claim in service token. Actions log `requested_by` / `approved_by` / `denied_by` but enforcement is advisory.
-- **Phase 1 (hardened):** Full RBAC enforcement at `gatra-agent` level. Role-based action gating. Session management with expiry.
+- **Local dev:** No auth required. All requests treated as `admin` role.
+- **Phase 0 (pilot):** SSO or trusted reverse-proxy auth in front of `gatra-copilot`. Signed HMAC service-to-service token between Next.js runtime and `gatra-agent`. Role passed as claim in service token. Identity propagation and audit attribution are mandatory. Destructive action authorization uses simplified enforcement logic (role checked but not centrally managed).
+- **Phase 1 (hardened production):** Full centralized RBAC enforcement at `gatra-agent` level. Role-based action gating with policy service. Session management with expiry. SSO provider integration.
 
 ### Audit Identity Fields
 
@@ -121,8 +122,8 @@ class AuditIdentity(BaseModel):
 All critical objects use typed Pydantic models — no generic `dict` in safety-sensitive paths.
 
 ```python
-from pydantic import BaseModel
-from typing import Literal
+from pydantic import BaseModel, Field
+from typing import Any, Literal
 from datetime import datetime
 
 class Alert(BaseModel):
@@ -152,7 +153,7 @@ class TriageResult(BaseModel):
     actor_attribution: str
     campaign: str | None = None
     confidence: float
-    iocs: list[str]
+    iocs: list[str] = Field(default_factory=list)
     timestamp: datetime
 
 class ProposedAction(BaseModel):
@@ -196,7 +197,7 @@ class VulnerabilityContext(BaseModel):
     cve_id: str
     cvss_v4_score: float
     epss_percentile: float
-    affected_products: list[str]
+    affected_products: list[str] = Field(default_factory=list)
     patch_available: bool
     cisa_kev: bool                       # in CISA Known Exploited Vulnerabilities
     recommendation: str
@@ -217,7 +218,7 @@ class StateError(BaseModel):
     retryable: bool = False
     source: str                          # node or tool name
     timestamp: datetime
-    details: dict | None = None
+    details: dict[str, Any] | None = None
 
 class AuditEntry(BaseModel):
     id: str
@@ -234,8 +235,8 @@ class AuditEntry(BaseModel):
     agent: str
     actor: str | None = None             # user_id if human-initiated
     summary: str
-    details: dict | None = None
-    compliance_frameworks: list[str] = []
+    details: dict[str, Any] | None = None
+    compliance_frameworks: list[str] = Field(default_factory=list)
     # policy_evaluated fields (populated when event_type == "policy_evaluated")
     policy_decision: PolicyDecision | None = None
 ```
@@ -257,33 +258,33 @@ class GatraState(CopilotKitState):
     query: str = ""
 
     # ADA outputs (owner: ADA node)
-    alerts: list[Alert] = []
-    anomaly_scores: dict[str, float] = {}
+    alerts: list[Alert] = Field(default_factory=list)
+    anomaly_scores: dict[str, float] = Field(default_factory=dict)
 
     # TAA outputs (owner: TAA node)
-    triage_results: list[TriageResult] = []
+    triage_results: list[TriageResult] = Field(default_factory=list)
     actor_attribution: str = ""
     kill_chain_phase: str = ""
 
     # CRA outputs (owner: CRA node)
-    proposed_actions: list[ProposedAction] = []
-    approved_actions: list[ApprovedAction] = []
-    denied_actions: list[ProposedAction] = []
-    executed_actions: list[ExecutedAction] = []
+    proposed_actions: list[ProposedAction] = Field(default_factory=list)
+    approved_actions: list[ApprovedAction] = Field(default_factory=list)
+    denied_actions: list[ProposedAction] = Field(default_factory=list)
+    executed_actions: list[ExecutedAction] = Field(default_factory=list)
     approval_pending: bool = False
 
     # RVA outputs (owner: RVA node)
-    vulnerability_context: list[VulnerabilityContext] = []
+    vulnerability_context: list[VulnerabilityContext] = Field(default_factory=list)
 
     # CLA outputs (owner: CLA utility — append-only)
-    audit_log: list[AuditEntry] = []
-    compliance_flags: list[str] = []
+    audit_log: list[AuditEntry] = Field(default_factory=list)
+    compliance_flags: list[str] = Field(default_factory=list)
 
     # Pipeline metadata (owner: router node)
     current_agent: str = ""
     pipeline_stage: str = "idle"         # idle|detecting|triaging|responding|assessing|logging
     last_updated_at: datetime | None = None
-    errors: list[StateError] = []
+    errors: list[StateError] = Field(default_factory=list)
 ```
 
 ### State Ownership & Merge Rules
