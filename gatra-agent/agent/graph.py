@@ -1,6 +1,7 @@
 """LangGraph StateGraph assembly for the GATRA SOC agent pipeline."""
 from __future__ import annotations
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from agent.nodes.ada import ada_node
@@ -98,4 +99,4 @@ def build_graph() -> StateGraph:
     builder.add_edge("cla_report", END)
     builder.add_edge("llm_respond", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=MemorySaver())
