@@ -80,7 +80,7 @@ async function getAssets(baseUrl) {
     return _assetsCache;
   }
 
-  const assetsRes = await fetch(`${baseUrl}/data/assets.json`);
+  const assetsRes = await fetch(`${baseUrl}/sigma-rules/assets.json`);
   if (!assetsRes.ok) {
     throw new Error(`assets.json fetch failed: ${assetsRes.status}`);
   }
