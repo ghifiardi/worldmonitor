@@ -132,7 +132,7 @@ def cra_node(state: GatraState, config: RunnableConfig) -> dict:
     """Propose, gate-evaluate, optionally interrupt for approval, then execute."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
-        copilotkit_emit_state(config, {"current_agent": "cra", "pipeline_stage": "responding"})
+        await copilotkit_emit_state(config, {"current_agent": "cra", "pipeline_stage": "responding"})
     except Exception:
         pass
 

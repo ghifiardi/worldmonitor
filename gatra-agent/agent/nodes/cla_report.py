@@ -22,7 +22,7 @@ def cla_report_node(state: GatraState, config: RunnableConfig) -> dict:
     """Generate compliance report from audit log and executed actions."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
-        copilotkit_emit_state(config, {"current_agent": "cla_report", "pipeline_stage": "logging"})
+        await copilotkit_emit_state(config, {"current_agent": "cla_report", "pipeline_stage": "logging"})
     except Exception:
         pass
 

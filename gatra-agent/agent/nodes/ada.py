@@ -21,7 +21,7 @@ def ada_node(state: GatraState, config: RunnableConfig) -> dict:
     """Fetch alerts and score anomalies with the LLM."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
-        copilotkit_emit_state(config, {"current_agent": "ada", "pipeline_stage": "detecting"})
+        await copilotkit_emit_state(config, {"current_agent": "ada", "pipeline_stage": "detecting"})
     except Exception:
         pass
 

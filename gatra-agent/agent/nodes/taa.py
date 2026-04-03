@@ -22,7 +22,7 @@ def taa_node(state: GatraState, config: RunnableConfig) -> dict:
     """Map MITRE techniques, attribute actors, and prioritise for triage."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
-        copilotkit_emit_state(config, {"current_agent": "taa", "pipeline_stage": "triaging"})
+        await copilotkit_emit_state(config, {"current_agent": "taa", "pipeline_stage": "triaging"})
     except Exception:
         pass
 

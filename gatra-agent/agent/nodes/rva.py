@@ -22,7 +22,7 @@ def rva_node(state: GatraState, config: RunnableConfig) -> dict:
     """Assess vulnerabilities and residual risk."""
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
-        copilotkit_emit_state(config, {"current_agent": "rva", "pipeline_stage": "assessing"})
+        await copilotkit_emit_state(config, {"current_agent": "rva", "pipeline_stage": "assessing"})
     except Exception:
         pass
 
