@@ -71,6 +71,8 @@ const GATRA_AGENTS: GatraAgentDef[] = [
       /\b[0-9a-fA-F]{32}\b/i, /\b[0-9a-fA-F]{40}\b/i, /\b[0-9a-fA-F]{64}\b/i,
       /(?:scan|check|lookup|search|query)\s/i,
       /\b(?:\d{1,3}\.){3}\d{1,3}\b/,
+      /\bsigma\b/i,
+      /\bsigma\s+scan\b/i,
       /@ada\b/i,
     ],
   },
@@ -242,6 +244,64 @@ function extractIoC(text: string): { type: IoCType; value: string } | null {
   return null;
 }
 
+function tryExtractJson(text: string): Record<string, unknown> | null {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[0]);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) return parsed;
+  } catch { /* not valid JSON */ }
+  return null;
+}
+
+async function runSigmaScan(event: Record<string, unknown>): Promise<string> {
+  try {
+    const res = await fetch('/api/sigma-scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: [event] }),
+    });
+    if (!res.ok) return `Sigma scan failed: HTTP ${res.status}`;
+    const data = await res.json();
+    const result = data.results?.[0];
+    if (!result || result.matches.length === 0) {
+      return `Sigma scan complete \u2014 no matches (${data.rules_loaded} rules evaluated)`;
+    }
+
+    let output = `Sigma scan complete \u2014 ${result.matches.length} match${result.matches.length > 1 ? 'es' : ''}\n`;
+    for (const m of result.matches) {
+      const sev = m.effective_severity.toUpperCase();
+      const elevated = m.rule_level !== m.effective_severity
+        ? ` (elevated from ${m.rule_level.toUpperCase()})` : '';
+      output += `\n  ${sev}${elevated}: ${m.title}\n`;
+      output += `  Rule: ${m.rule_id}`;
+      if (m.rule_metadata.mitre_technique) output += ` | MITRE: ${m.rule_metadata.mitre_technique}`;
+      output += '\n';
+      output += `  Matched: ${Object.entries(m.enrichment.matched_fields).map(([k, v]) => `${k}=${v}`).join(', ')}\n`;
+      if (m.enrichment.severity_reason) output += `  Elevated because: ${m.enrichment.severity_reason.replace(/^Elevated [^:]+: /, '')}\n`;
+      if (m.asset_context) {
+        output += `\n  Asset: ${m.asset_context.host_id} (${m.asset_context.name})\n`;
+        output += `  Criticality: ${m.asset_context.criticality.toUpperCase()} | Zone: ${m.asset_context.network_zone}\n`;
+        if (m.asset_context.unpatched_cves.length > 0) {
+          output += `  Unpatched: ${m.asset_context.unpatched_cves.join(', ')}\n`;
+        }
+        if (m.asset_context.firmware_outdated) output += `  Firmware: outdated\n`;
+        output += `  Patch status: ${m.asset_context.patch_status.toUpperCase()}\n`;
+      }
+      if (m.recommendations.length > 0) {
+        output += `\n  Recommendations:\n`;
+        m.recommendations.forEach((r, i) => { output += `  ${i + 1}. ${r}\n`; });
+      }
+      const agent = m.rule_metadata.gatra_agent || (m.effective_severity === 'critical' ? 'cra' : 'taa');
+      const agentAction = agent === 'cra' ? 'CRA containment candidate (requires analyst approval)' : `Escalate to @${agent}`;
+      output += `\n  ${agentAction}`;
+    }
+    return output;
+  } catch (err) {
+    return `Sigma scan error: ${err instanceof Error ? err.message : 'Unknown error'}`;
+  }
+}
+
 // ── MITRE ATT&CK technique database (691 techniques, loaded from /data/mitre-techniques.json) ──
 
 interface MitreTechniqueEntry {
@@ -286,6 +346,14 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
   switch (agent.id) {
     // ── ADA: Anomaly Detection Agent ──────────────────────────────
     case 'ada': {
+      // Sigma scan: triggered by "sigma" keyword or pasted JSON with scan intent
+      const sigmaKeyword = /\bsigma\b/i.test(message);
+      const scanIntent = /\b(scan|match|detect)\s+(this|against|threats)/i.test(message);
+      const jsonEvent = tryExtractJson(message);
+      if (jsonEvent && (sigmaKeyword || scanIntent)) {
+        return runSigmaScan(jsonEvent);
+      }
+
       // IOC Lookup: if message contains a hash, IP, or URL, look it up live
       const iocMatch = extractIoC(message);
       if (iocMatch) {
@@ -432,7 +500,7 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
           `Detection methods currently active:\n` +
           `  \u2014 Behavioral sandbox: Suspicious files are detonated in an isolated environment. The Isolation Forest model scores behavioral anomalies \u2014 file system modifications, registry changes, network callbacks \u2014 to flag malicious intent even without known signatures.\n` +
           `  \u2014 LSTM sequence analysis: Monitors process creation chains and file I/O patterns over time. This catches multi-stage attacks where individual actions appear benign but the sequence reveals malicious intent (e.g., document \u2192 macro \u2192 PowerShell \u2192 download \u2192 execute).\n` +
-          `  \u2014 Signature matching: YARA rules (${Math.floor(Math.random() * 500 + 2000)} rules, updated ${Math.floor(Math.random() * 4 + 1)}h ago) and Snort/Suricata network signatures provide fast detection of known threats.\n` +
+          `  \u2014 Signature matching: YARA rules (${Math.floor(Math.random() * 500 + 2000)} rules, updated ${Math.floor(Math.random() * 4 + 1)}h ago), Sigma log detection (12 rules, asset-aware), and Snort/Suricata network signatures provide fast detection of known threats.\n` +
           `  \u2014 Heuristic/entropy analysis: Identifies packed, encrypted, or obfuscated payloads by measuring file entropy. High entropy sections in executables often indicate evasion techniques.\n\n` +
           (isRansomware
             ? `Ransomware-specific monitoring:\n` +
