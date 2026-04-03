@@ -62,9 +62,9 @@ POST /api/sigma-scan ---- GET /api/sigma-scan?action=rules
 +-------------------------------------+
 |  Sigma Engine (src/services/)       |
 |  - sigma-engine.ts (core matching)  |
-|  - Parses YAML -> SigmaRule[]       |
 |  - Normalizes event fields          |
-|  - Evaluates detection + conditions |
+|  - Parses YAML -> SigmaRule[]       |
+|  - Evaluates clauses + condition AST|
 |  - Resolves asset context           |
 |  - Computes effective severity      |
 |  - Returns SigmaMatch[]            |
@@ -115,7 +115,8 @@ The engine maps common alternative field names to canonical fields before matchi
 |-------|-----------|
 | `destination.ip`, `dest_ip`, `dst` | `dst_ip` |
 | `source.ip`, `src` | `src_ip` |
-| `destination.port`, `dport`, `sport` | `dst_port` / `src_port` |
+| `destination.port`, `dport` | `dst_port` |
+| `source.port`, `sport` | `src_port` |
 | `device_id`, `asset_id` | `host_id` |
 | `event.action` | `action` |
 | `username`, `login` | `user` |
@@ -276,7 +277,7 @@ The first match wins. If no asset is found, all `|asset_*` modifiers on that fie
 ### Conflict Behavior
 
 - If `host_id` and `dst_ip` in the same event resolve to different assets, each field resolves independently. The rule author controls which field the asset modifier is applied to.
-- If a single field value matches multiple assets (e.g., shared IP), the first asset in iteration order wins. This is a known limitation for v1; a future version could annotate ambiguity.
+- If a single field value maps to multiple assets (e.g., shared IP), the engine selects the first asset in the prebuilt lookup index order. This is deterministic within a given asset index build, but remains a known limitation for v1.
 
 ## 4. Matching Engine
 
@@ -531,6 +532,8 @@ Response (200):
   ],
   "rules_loaded": 12,
   "rules_failed": 0,
+  "rules_degraded": 0,
+  "warnings": [],
   "scanned_at": "2026-04-03T12:00:00Z",
   "engine_version": "1.0.0"
 }
@@ -596,7 +599,7 @@ Base severity comes from the rule's `level` field. The engine elevates severity 
 | Asset `patch_status` = critical | +1 tier |
 | Asset `firmware_upgrade_required` = true AND `hardware_eol` within 12 months | +1 tier |
 
-**Cap:** Maximum effective severity is `critical`. Elevations do not stack beyond critical.
+Multiple elevation conditions are independently cumulative, up to the maximum of `critical`.
 
 **Severity tiers (ordered):** informational < low < medium < high < critical
 
@@ -613,7 +616,7 @@ Base severity comes from the rule's `level` field. The engine elevates severity 
 | medium | TAA | Standard investigation |
 | low / informational | ADA | Monitor and log |
 
-The `gatra_agent` in the rule can override this default routing. Rule-specified agent takes precedence over severity-based default.
+The `gatra_agent` in the rule can override this default routing. Rule-specified agent takes precedence over severity-based default. All recommendations remain advisory only; routing does not imply automatic execution authority.
 
 ## 7. MCP Tools
 
@@ -697,9 +700,9 @@ ADA: Sigma scan complete -- 1 match
 |-------|----------|
 | YAML parse failure | Skip rule, increment `rules_failed` counter, log warning |
 | Missing required field (id, title, detection, level) | Skip rule, log warning |
-| Invalid modifier in detection clause | Load rule, but affected matcher always evaluates to false |
+| Invalid modifier in detection clause | Load rule as degraded; affected matcher always evaluates to false. Degraded rules are counted separately in diagnostics (`rules_degraded` in API response). |
 | Invalid regex pattern in `re` modifier | Load rule, but affected matcher always evaluates to false |
-| Duplicate rule ID | Last-loaded wins, log warning |
+| Duplicate rule ID | Keep first-loaded, skip duplicate, log warning |
 
 ### Asset Loading Errors
 
@@ -714,7 +717,7 @@ ADA: Sigma scan complete -- 1 match
 |-------|----------|
 | Event is not a JSON object | Return `{ event_index, error: "...", matches: [] }` |
 | Field value type mismatch (e.g., string vs number for `gte`) | Matcher evaluates to false (no match), no error |
-| Regex timeout/catastrophic backtracking | Field value truncated to 10K chars; regex has implicit timeout via pattern length cap |
+| Regex timeout/catastrophic backtracking | Catastrophic backtracking risk is reduced through pattern length caps (200 chars) and input truncation (10K chars), but no true regex execution timeout is guaranteed in v1 |
 
 ## 10. Testing Strategy
 
@@ -754,12 +757,13 @@ ADA: Sigma scan complete -- 1 match
 
 ## 11. Performance Assumptions
 
-- 12 rules, ~15 assets: scan time per event < 5ms
-- 50 events max per request: total < 250ms well within Edge Function limits
-- Rule + asset loading: ~50ms on cold start (small YAML files)
+- 12 rules, ~15 assets: target scan time per event < 5ms (to be validated in implementation benchmarks)
+- 50 events max per request: expected total < 250ms under nominal v1 loads
+- Rule + asset loading: expected ~50ms on cold start (small YAML files)
 - In-memory cache eliminates re-parsing for warm instances
 - No heavy computation (no ML, no network calls during matching)
-- Edge Function memory: well under 128MB default
+- Edge Function memory: expected well under 128MB default
+- All performance targets to be validated during implementation
 
 ## Out of Scope (v1)
 
