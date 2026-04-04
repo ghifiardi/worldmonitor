@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import uuid
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from agent.audit import emit_audit
 from agent.llm import get_llm
 from agent.policy import ResponseGatePolicy
 from agent.state import (
+    AgentMode,
     ApprovedAction,
     ExecutedAction,
     GatraState,
@@ -83,6 +85,17 @@ def check_action_expiry(expires_at: datetime) -> bool:
     if expires_at.tzinfo is None:
         return expires_at < datetime.now()
     return expires_at < now
+
+
+def enforce_lite_mode(actions: list) -> list:
+    """Deep-copy actions and mark all as non-executable for lite mode."""
+    result = []
+    for action in actions:
+        a = deepcopy(action)
+        a.executable = False
+        a.reason = "read-only mode — view in Analyst Console for execution"
+        result.append(a)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +216,15 @@ async def cra_node(state: GatraState, config: RunnableConfig) -> dict:
     )
 
     new_proposed = [*updated_state.proposed_actions, proposed_action]
+
+    # --- 4. Lite-mode early return — no interrupt, no execution ---
+    if state.mode == AgentMode.lite:
+        lite_actions = enforce_lite_mode(new_proposed)
+        return {
+            "proposed_actions": lite_actions,
+            "current_agent": "CRA",
+            "pipeline_stage": "responding",
+        }
 
     # --- 4a. Denied by policy ---
     if policy_decision.decision == "denied_by_policy":

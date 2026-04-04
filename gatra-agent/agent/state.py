@@ -40,7 +40,7 @@ class ProposedAction(BaseModel):
     action_type: Literal["notify", "unblock", "resume", "suspend", "block", "kill", "isolate"]
     target_type: Literal["ip", "host", "endpoint", "process", "user", "session"]
     target_value: str
-    target_fingerprint: str
+    target_fingerprint: str = ""
     severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
     confidence: float
     rationale: str
@@ -49,6 +49,8 @@ class ProposedAction(BaseModel):
     requested_by_agent: str = "CRA"
     status: Literal["proposed", "approved", "denied", "executed", "failed"] = "proposed"
     expires_at: datetime
+    executable: bool = True
+    reason: str | None = None
 
 class ApprovedAction(BaseModel):
     action_id: str
