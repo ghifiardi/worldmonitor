@@ -91,3 +91,28 @@ def test_audit_identity():
     identity = AuditIdentity(user_id="user-001", role="approver", session_id="sess-abc",
         timestamp=datetime.now(), ticket_ref="INC-42")
     assert identity.role == "approver"
+
+
+# AgentMode enum and mode field tests
+def test_agent_mode_enum_values():
+    from agent.state import AgentMode
+    assert AgentMode.full == "full"
+    assert AgentMode.lite == "lite"
+
+
+def test_gatra_state_defaults_to_full_mode():
+    from agent.state import AgentMode
+    state = GatraState(messages=[])
+    assert state.mode == AgentMode.full
+
+
+def test_gatra_state_accepts_lite_mode():
+    from agent.state import AgentMode
+    state = GatraState(messages=[], mode=AgentMode.lite)
+    assert state.mode == AgentMode.lite
+
+
+def test_gatra_state_rejects_invalid_mode():
+    import pytest
+    with pytest.raises(Exception):
+        GatraState(messages=[], mode="invalid")

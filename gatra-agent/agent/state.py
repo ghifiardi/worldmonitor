@@ -1,6 +1,7 @@
 """Typed state models for the GATRA LangGraph agent pipeline."""
 from __future__ import annotations
 from datetime import datetime
+from enum import Enum
 from typing import Annotated, Any, Literal
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
@@ -121,10 +122,15 @@ class AuditIdentity(BaseModel):
     timestamp: datetime
     ticket_ref: str | None = None
 
+class AgentMode(str, Enum):
+    full = "full"
+    lite = "lite"
+
 class GatraState(BaseModel):
     # CopilotKit / LangGraph messages state (kept for graph compatibility)
     messages: Annotated[list[AnyMessage], add_messages] = Field(default_factory=list)
     copilotkit: dict[str, Any] = Field(default_factory=dict)
+    mode: AgentMode = AgentMode.full
     session_id: str = ""
     incident_id: str = ""
     trace_id: str = ""
