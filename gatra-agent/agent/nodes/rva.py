@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agent.audit import emit_audit
 from agent.llm import get_llm
-from agent.state import GatraState
+from agent.state import AgentMode, GatraState
 
 _SYSTEM_PROMPT = """You are RVA, the Risk and Vulnerability Assessment Agent in GATRA.
 Based on the incident context (alerts, triage results, executed actions), you:
@@ -20,6 +20,10 @@ Always cite CVE IDs when referencing specific vulnerabilities."""
 
 async def rva_node(state: GatraState, config: RunnableConfig) -> dict:
     """Assess vulnerabilities and residual risk."""
+    # Defense-in-depth: RVA must no-op if accidentally reached in lite mode
+    if state.mode == AgentMode.lite:
+        return {"vulnerability_context": [], "current_agent": "rva", "pipeline_stage": "assessing"}
+
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
         await copilotkit_emit_state(config, {"current_agent": "rva", "pipeline_stage": "assessing"})

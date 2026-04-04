@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 
 from agent.audit import emit_audit
 from agent.llm import get_llm
-from agent.state import GatraState
+from agent.state import AgentMode, GatraState
 
 _SYSTEM_PROMPT = """You are CLA, the Compliance Logging Agent in GATRA.
 Given the incident audit log and any executed containment actions, produce:
@@ -20,6 +20,12 @@ Format as a concise compliance report suitable for auditors."""
 
 async def cla_report_node(state: GatraState, config: RunnableConfig) -> dict:
     """Generate compliance report from audit log and executed actions."""
+    # Execution invariant (defense-in-depth):
+    # In lite mode: audit logging only, no operational side effects.
+    # Current implementation is already audit-only (no action execution),
+    # but this guard makes the invariant explicit for future changes.
+    assert state.mode in (AgentMode.full, AgentMode.lite), f"Unknown mode: {state.mode}"
+
     try:
         from copilotkit.langgraph import copilotkit_emit_state  # type: ignore
         await copilotkit_emit_state(config, {"current_agent": "cla_report", "pipeline_stage": "logging"})
