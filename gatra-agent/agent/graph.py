@@ -11,7 +11,7 @@ from agent.nodes.llm_respond import llm_respond_node
 from agent.nodes.router import router_node
 from agent.nodes.rva import rva_node
 from agent.nodes.taa import taa_node
-from agent.state import GatraState
+from agent.state import AgentMode, GatraState
 
 # ---------------------------------------------------------------------------
 # Conditional routing helpers
@@ -42,6 +42,13 @@ def _taa_dispatch(state: GatraState) -> str:
     for triage in state.triage_results:
         if _SEVERITY_ORDER.get(triage.severity, 0) >= _SEVERITY_ORDER["HIGH"]:
             return "cra"
+    return "rva"
+
+
+def _cra_dispatch(state: GatraState) -> str:
+    """Route CRA output: full mode → RVA, lite mode → END."""
+    if state.mode == AgentMode.lite:
+        return "__end__"
     return "rva"
 
 
@@ -91,8 +98,12 @@ def build_graph() -> StateGraph:
         {"cra": "cra", "rva": "rva"},
     )
 
-    # CRA → RVA
-    builder.add_edge("cra", "rva")
+    # CRA → RVA (full mode) or END (lite mode)
+    builder.add_conditional_edges(
+        "cra",
+        _cra_dispatch,
+        {"rva": "rva", "__end__": "__end__"},
+    )
 
     # Terminal edges
     builder.add_edge("rva", END)
