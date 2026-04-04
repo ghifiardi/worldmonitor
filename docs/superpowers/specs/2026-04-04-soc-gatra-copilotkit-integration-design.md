@@ -1,7 +1,7 @@
 # CopilotKit Integration into soc.gatra.ai
 
 **Date:** 2026-04-04
-**Status:** Draft
+**Status:** Revised (added contracts, observability, rollout criteria, risks, workstreams)
 **Author:** Ghifi + Claude
 **Related:** [GATRA CopilotKit + LangGraph Analyst Console](2026-04-03-gatra-copilotkit-langgraph-design.md)
 
@@ -19,6 +19,27 @@ Integrate CopilotKit into the existing soc.gatra.ai (`gatra-production`) so that
 | UI placement | Separate `/soc-analyst` page, existing chatbot untouched | Low risk, preserves simple FAQ path |
 | Router adoption | Incremental App Router (`app/` alongside `pages/`) | New experience on App Router, no migration risk |
 | Auth model | SSO/RBAC from gatra-copilot spec, capped at `analyst` | Consistent identity model across both frontends |
+
+### Non-Goals
+
+- Migrating soc.gatra.ai from Pages Router to App Router beyond the new `/soc-analyst` route
+- Replacing the existing `ChatbotMCP.js` FAQ widget
+- Adding sidebar widgets (AgentHealth, IncidentTimeline, ActiveAlerts) to soc.gatra.ai
+- Modifying `gatra-copilot` frontend or its deployment
+- Changing existing `gatra-agent` tool implementations
+
+### Open Decisions / Assumptions
+
+These items are not blockers for implementation planning but must be resolved before the relevant workstream begins. Each is tagged with the phase where resolution is required.
+
+| # | Decision | Current Assumption | Resolve By |
+|---|----------|--------------------|------------|
+| OD-1 | SSO provider and session implementation | Same provider as gatra-copilot (details in parent spec). soc.gatra.ai uses session cookies, not bearer tokens for browser auth. | Phase 1 start |
+| OD-2 | Phase 1 pilot allowlist source | Hardcoded email list in env var (`SOC_ANALYST_PILOT_EMAILS`). Not a database or external service. | Phase 1 start |
+| OD-3 | Canonical backend endpoint path for `route_scope` | `/agent/run` — single endpoint. If gatra-agent adds more endpoints later, scopes must be revisited. | Phase 1 start |
+| OD-4 | Token signer: shared secret or asymmetric keys? | Shared symmetric secret (`AGENT_SERVICE_SECRET`) for v1. Both frontends use separate secrets per environment, but the agent validates both. Asymmetric keys (RS256) are a future hardening option. | Phase 1 start |
+| OD-5 | "Launch Full Console" behavior for unauthorized users | Link is visible but gatra-copilot enforces its own auth. If user lacks permission, gatra-copilot shows its own access-denied page. soc.gatra.ai does not pre-check gatra-copilot permissions. | Phase 2 start |
+| OD-6 | Rate limiting strategy for `/api/copilotkit` | Per-user rate limit (e.g., 20 req/min) enforced in the App Router API route. Not delegated to Vercel edge or gatra-agent. | Phase 2 start |
 
 ---
 
@@ -374,7 +395,240 @@ Deployed on Vercel (existing). No platform changes required. The new `/soc-analy
 
 ---
 
-## Appendix: What Is NOT Changing
+## 7. API & UI Payload Contracts
+
+These are the canonical typed contracts between `gatra-agent` output and the generative UI components in both frontends. Contract ownership: `gatra-agent` is the producer and source of truth. Both frontends consume and must conform. Breaking changes require version bump and coordinated update.
+
+### AlertCard Payload
+
+```typescript
+interface AlertCardPayload {
+  type: "alert_card";
+  alert_id: string;
+  title: string;
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  source: string;                    // e.g., "ADA", "TAA"
+  timestamp: string;                 // ISO 8601
+  description: string;
+  indicators: Indicator[];
+  mitre_techniques?: string[];       // e.g., ["T1566.001"]
+  recommended_actions: ActionItem[]; // present in both modes
+  mode: "full" | "lite";
+}
+
+interface Indicator {
+  type: "ip" | "domain" | "hash" | "email" | "url" | "cve";
+  value: string;
+  context?: string;
+}
+```
+
+### MitreCard Payload
+
+```typescript
+interface MitreCardPayload {
+  type: "mitre_card";
+  technique_id: string;             // e.g., "T1566.001"
+  technique_name: string;
+  tactic: string;                   // e.g., "Initial Access"
+  description: string;
+  detection_guidance: string;
+  data_sources: string[];
+  related_alerts?: string[];        // alert_ids
+  mode: "full" | "lite";
+}
+```
+
+### VulnCard Payload
+
+```typescript
+interface VulnCardPayload {
+  type: "vuln_card";
+  cve_id: string;
+  severity: "critical" | "high" | "medium" | "low";
+  cvss_score?: number;
+  description: string;
+  affected_products: string[];
+  patch_available: boolean;
+  patch_url?: string;
+  mitigation: string;
+  mode: "full" | "lite";
+}
+```
+
+### ActionItem (shared across cards)
+
+```typescript
+interface ActionItem {
+  action_id: string;
+  action_type: "notify" | "block" | "suspend" | "kill" | "isolate";
+  target: string;                   // e.g., IP, hostname, user
+  description: string;
+  executable: boolean;              // always false in lite mode
+  reason?: string;                  // present when executable is false
+  minimum_role: "analyst" | "responder" | "approver";
+}
+```
+
+### Contract Versioning
+
+- Payloads include no explicit version field in v1. Breaking changes are detected by contract tests.
+- If breaking changes become frequent, a `contract_version: number` field will be added to all payloads.
+- Contract tests run in both frontend CI pipelines against shared fixture files exported from `gatra-agent`.
+
+---
+
+## 8. Observability & Telemetry Requirements
+
+These are first-class implementation items, not post-launch monitoring notes.
+
+### Mandatory Structured Fields
+
+Every request through `/api/copilotkit` and every `gatra-agent` graph run must emit structured log entries with these fields:
+
+| Field | Source | Purpose |
+|-------|--------|---------|
+| `trace_id` | Generated in `/api/copilotkit`, propagated via header to agent | End-to-end request correlation |
+| `iss` | Service token | Distinguish traffic source |
+| `source` | Service token | `soc-site` vs `copilot` |
+| `requested_mode` | Client request | What the frontend asked for |
+| `effective_mode` | Agent middleware | What actually ran |
+| `role_ceiling` | Service token | Maximum permitted role |
+| `sub` | Service token | User identity for audit |
+| `route_outcome` | Agent response | `success`, `error`, `degraded`, `rejected` |
+| `latency_ms` | Measured end-to-end | Performance tracking |
+| `nodes_executed` | Graph state | Which agent nodes ran (e.g., `["ADA","TAA","CRA"]`) |
+
+### Rate Limiting
+
+- Per-user rate limit on `/api/copilotkit`: 20 requests/minute (resolve OD-6 for exact threshold)
+- Rate limit enforced in the App Router API route, not delegated to edge or backend
+- Rate-limited requests return 429 with `Retry-After` header
+- Rate limit events logged with `trace_id` and `sub`
+
+### Request Correlation
+
+- `trace_id` is a UUID v4 generated in `/api/copilotkit` on every request
+- Passed to `gatra-agent` via `X-Trace-ID` header
+- Agent logs, CLA audit entries, and error responses all include `trace_id`
+- Frontend displays `trace_id` in error states so users can reference it in support requests
+
+### Dashboards (Phase 2 prerequisite)
+
+Before soft launch, the following must be queryable from CLA audit logs or the observability system:
+
+- Request volume by `source` (soc-site vs copilot) over time
+- Mode override frequency (`requested_mode ≠ effective_mode`)
+- Error rate by `route_outcome` and `source`
+- P50/P95/P99 latency by `source`
+- Token rejection rate by rejection reason
+
+---
+
+## 9. Rollout Entry–Exit Criteria
+
+### Phase 1 → Phase 2 (Internal Pilot → Soft Launch)
+
+**Entry criteria for Phase 1:**
+- All lite-mode backend unit and integration tests green
+- `/soc-analyst` allowlist enforcement verified (manual + automated)
+- Degraded-state UX verified for all failure modes in Section 5
+- Token minting and validation working end-to-end in preview environment
+- `trace_id` correlation confirmed from frontend proxy through to CLA audit log
+
+**Exit criteria for Phase 1 (gates Phase 2):**
+- Minimum 1 week of internal pilot usage
+- No token-escalation defects (mode override test passing in production)
+- No unresolved P0/P1 bugs from pilot users
+- Telemetry dashboards live and queryable (Section 8)
+- CLA audit logs confirmed for all pilot sessions
+
+### Phase 2 → Phase 3 (Soft Launch → GA)
+
+**Entry criteria for Phase 2:**
+- Pilot email allowlist removed, SSO-only access enforced
+- `NEXT_PUBLIC_SOC_ANALYST_ENABLED=true` in production
+- E2E test passing in production-like environment
+
+**Exit criteria for Phase 2 (gates GA):**
+- Minimum 2 weeks of soft-launch usage
+- Error rate below 2% of total requests (by `route_outcome`)
+- No unresolved contract drift issues (contract tests green across both frontends)
+- No mode-escalation or token-scope defects
+- Rollback kill switch confirmed operational (tested: flag off → analyst console inaccessible within 1 deploy)
+- P95 latency within acceptable bounds (target: under 5s for full graph run)
+
+---
+
+## 10. Risks and Mitigations
+
+| # | Risk | Likelihood | Impact | Mitigation |
+|---|------|-----------|--------|------------|
+| R-1 | **Contract drift** — gatra-agent payload changes break copied UI components in soc.gatra.ai | High | Medium | Contract tests in both frontend CIs against shared fixtures. Provenance headers with commit-level sync tracking. |
+| R-2 | **Auth/session mismatch** — SSO session handling differs between Pages Router (`_app.js`) and App Router (`app/layout.tsx`) | Medium | High | SSO session validation happens in the API route (`/api/copilotkit`), not in the layout. Layout only checks for redirect. Test both paths in Phase 1. |
+| R-3 | **Mixed-router CSS/provider regression** — `app/` and `pages/` share global styles or conflict on providers | Medium | Medium | `app/layout.tsx` scopes CopilotKit provider narrowly. Manual visual QA of existing pages after integration. CSS isolation verified in Phase 1. |
+| R-4 | **Token-scope mistakes** — incorrect `route_scope` or `aud` lets a soc-site token reach unintended endpoints | Low | Critical | Token validation rejects unknown scopes. Integration test: soc-site token against non-`/agent/run` endpoint → 403. |
+| R-5 | **Pilot allowlist errors** — wrong emails, env var misconfigured, or allowlist not enforced | Medium | Low | Automated route test for allowlist enforcement. Manual verification in Phase 1 checklist. |
+| R-6 | **Agent backend unavailability** — gatra-agent downtime degrades soc.gatra.ai experience | Medium | Medium | Graceful degraded UI (Section 5 failure modes). Existing chatbot widget unaffected. Health check monitoring. |
+| R-7 | **Rate limit bypass** — attacker floods `/api/copilotkit` | Low | Medium | Per-user rate limiting in API route. If needed, add Vercel WAF rules in Phase 2. |
+
+---
+
+## 11. Implementation Workstreams & Sequencing
+
+Six parallel workstreams, with dependencies noted. This provides the structure for the implementation plan.
+
+### Workstream A: Backend Mode System
+**Owner:** Backend engineer
+**Scope:** `gatra-agent` changes — mode enum, router edges, CRA lite behavior, CLA side-effect boundary, execution invariant checks in all nodes
+**Dependencies:** None — can start immediately
+**Deliverable:** Mode-aware agent with all backend unit + integration tests green
+
+### Workstream B: Token & Auth
+**Owner:** Backend + infra
+**Scope:** Token minting in soc.gatra.ai `/api/copilotkit`, token validation middleware in gatra-agent (extended issuer trust), RBAC ceiling enforcement
+**Dependencies:** OD-1 (SSO provider), OD-4 (symmetric vs asymmetric keys) resolved
+**Deliverable:** End-to-end token flow working in dev, all token validation tests green
+
+### Workstream C: Frontend Integration
+**Owner:** Frontend engineer
+**Scope:** `app/` directory setup, `/soc-analyst` page, `AnalystPanel.tsx`, CopilotKit provider mounting, "Launch Analyst Console" CTA on `/soc`
+**Dependencies:** Workstream B (needs working `/api/copilotkit` route)
+**Deliverable:** `/soc-analyst` renders CopilotKit chat panel, connects to agent, receives responses
+
+### Workstream D: Generative UI Components
+**Owner:** Frontend engineer
+**Scope:** Copy AlertCard, MitreCard, VulnCard from gatra-copilot with provenance headers. Implement `LiteModeGuard`. Component tests including defensive render cases.
+**Dependencies:** Payload contracts (Section 7) finalized. Can start in parallel with Workstream C.
+**Deliverable:** All generative UI components rendering correctly with sample and malformed payloads
+
+### Workstream E: Observability & Operational Safeguards
+**Owner:** Infra / backend
+**Scope:** `trace_id` generation and propagation, structured logging fields, rate limiting, dashboard queries
+**Dependencies:** Workstreams A + B (needs working request flow to instrument)
+**Deliverable:** All Section 8 structured fields emitting, dashboards queryable
+
+### Workstream F: Rollout & Testing
+**Owner:** QA / all engineers
+**Scope:** Phase 1 allowlist gating, E2E tests, contract tests, rollout flag behavior, kill switch verification
+**Dependencies:** All other workstreams substantially complete
+**Deliverable:** Phase 1 entry criteria met, pilot begins
+
+### Sequencing
+
+```
+Week 1-2:  A (backend mode) + B (token/auth) + D (UI components) — parallel
+Week 2-3:  C (frontend integration) — depends on B
+Week 3:    E (observability) — depends on A + B
+Week 3-4:  F (rollout/testing) — depends on all
+Week 4:    Phase 1 pilot begins
+```
+
+A and B are the critical path. D can proceed in parallel using contract fixtures before the backend is ready.
+
+---
+
+## Appendix A: What Is NOT Changing
 
 - `pages/` directory, `_app.js`, existing API routes in `gatra-production`
 - `ChatbotMCP.js` widget — still works as the simple FAQ chatbot
