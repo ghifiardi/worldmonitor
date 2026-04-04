@@ -86,3 +86,31 @@ def test_source_copilot_allows_full_mode():
 def test_source_copilot_defaults_to_full():
     from agent.auth import resolve_effective_mode
     assert resolve_effective_mode(source="copilot", requested_mode=None) == "full"
+
+# C3: Issuer validation
+def test_validate_rejects_untrusted_issuer():
+    token = mint_service_token(
+        sub="user@gatra.ai", iss="evil.attacker.com", aud="gatra-agent",
+        source="soc-site", role_ceiling="analyst", route_scope=["/agent/run"],
+        secret=SECRET, ttl_seconds=300,
+    )
+    with pytest.raises(TokenError, match="untrusted issuer"):
+        validate_service_token(token, secret=SECRET, expected_aud="gatra-agent")
+
+def test_validate_accepts_gatra_copilot_issuer():
+    token = mint_service_token(
+        sub="user@gatra.ai", iss="gatra-copilot", aud="gatra-agent",
+        source="copilot", role_ceiling="admin", route_scope=["/agent/run"],
+        secret=SECRET, ttl_seconds=300,
+    )
+    claims = validate_service_token(token, secret=SECRET, expected_aud="gatra-agent")
+    assert claims["iss"] == "gatra-copilot"
+
+# C2: Unknown source defaults to lite (fail-closed)
+def test_unknown_source_defaults_to_lite():
+    from agent.auth import resolve_effective_mode
+    assert resolve_effective_mode(source="admin-override", requested_mode="full") == "lite"
+
+def test_unknown_source_with_none_mode_returns_lite():
+    from agent.auth import resolve_effective_mode
+    assert resolve_effective_mode(source="unknown", requested_mode=None) == "lite"

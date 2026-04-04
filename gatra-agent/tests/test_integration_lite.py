@@ -232,9 +232,9 @@ def test_copilot_source_defaults_to_full_when_none():
     assert result == "full"
 
 
-def test_unknown_source_passes_through():
-    """Unknown sources must not be silently downgraded to lite."""
-    assert resolve_effective_mode(source="internal-api", requested_mode="full") == "full"
+def test_unknown_source_defaults_to_lite():
+    """Unknown sources must fail-closed to lite mode (C2 fix)."""
+    assert resolve_effective_mode(source="internal-api", requested_mode="full") == "lite"
 
 
 # ---------------------------------------------------------------------------
