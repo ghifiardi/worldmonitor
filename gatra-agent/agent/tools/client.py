@@ -15,7 +15,14 @@ def gatra_client(timeout: int | None = None) -> httpx.AsyncClient:
     timeout = timeout or int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
     base_url = os.getenv("WORLDMONITOR_API_URL", "https://worldmonitor-gatra.vercel.app")
     api_key = os.getenv("GATRA_API_KEY", "")
-    return httpx.AsyncClient(base_url=base_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=httpx.Timeout(timeout))
+    return httpx.AsyncClient(
+        base_url=base_url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "GATRA-Agent/1.0 (SOC Pipeline)",
+        },
+        timeout=httpx.Timeout(timeout),
+    )
 
 async def make_request(path: str, *, method: str = "GET", params: dict | None = None,
     json_body: dict | None = None, timeout: int | None = None, max_retries: int = 3) -> dict:
