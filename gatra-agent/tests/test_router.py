@@ -63,3 +63,42 @@ def test_route_detection():
 def test_route_general():
     intent = {"intent": "general", "confidence": 1.0, "target_entities": []}
     assert route_from_intent(intent) == "llm_respond"
+
+
+# ---------------------------------------------------------------------------
+# Context-based mode injection tests
+# ---------------------------------------------------------------------------
+
+import asyncio
+from agent.request_context import effective_mode_var
+from agent.state import AgentMode, GatraState
+from agent.nodes.router import router_node
+
+
+def test_router_overrides_mode_from_context_var():
+    """Router must read effective_mode from contextvars and override state.mode."""
+    state = GatraState(messages=[], mode=AgentMode.full, query="analyze alerts")
+    token = effective_mode_var.set("lite")
+    try:
+        result = asyncio.run(router_node(state, config=None))
+        assert result["mode"] == AgentMode.lite
+    finally:
+        effective_mode_var.reset(token)
+
+
+def test_router_defaults_to_full_without_context():
+    """Without context var set, mode defaults to full."""
+    state = GatraState(messages=[], mode=AgentMode.full, query="analyze alerts")
+    result = asyncio.run(router_node(state, config=None))
+    assert result["mode"] == AgentMode.full
+
+
+def test_router_rejects_invalid_context_mode():
+    """Invalid context mode falls back to full (defense-in-depth)."""
+    state = GatraState(messages=[], mode=AgentMode.full, query="analyze alerts")
+    token = effective_mode_var.set("invalid")
+    try:
+        result = asyncio.run(router_node(state, config=None))
+        assert result["mode"] == AgentMode.full
+    finally:
+        effective_mode_var.reset(token)

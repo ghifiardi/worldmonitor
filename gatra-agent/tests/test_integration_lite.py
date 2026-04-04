@@ -26,7 +26,20 @@ from langchain_core.messages import AIMessage
 
 from agent.auth import resolve_effective_mode
 from agent.graph import build_graph
+from agent.request_context import effective_mode_var
 from agent.state import AgentMode, GatraState
+
+
+@pytest.fixture(autouse=True)
+def _set_lite_mode_context():
+    """Set effective_mode context var to 'lite' for all tests in this module.
+
+    This simulates what ServiceTokenMiddleware does for soc-site tokens.
+    Without this, the router node defaults to full mode from the context var.
+    """
+    token = effective_mode_var.set("lite")
+    yield
+    effective_mode_var.reset(token)
 
 
 # ---------------------------------------------------------------------------

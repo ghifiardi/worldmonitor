@@ -13,6 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from agent.auth import TokenError, resolve_effective_mode, validate_service_token
 from agent.graph import build_graph
+from agent.request_context import effective_mode_var, rbac_ceiling_var, trace_id_var
 
 # ---------------------------------------------------------------------------
 # Public paths that skip JWT validation
@@ -77,6 +78,12 @@ class ServiceTokenMiddleware(BaseHTTPMiddleware):
         request.state.effective_mode = effective_mode
         request.state.rbac_ceiling = claims.get("role_ceiling", "analyst")
         request.state.trace_id = claims.get("jti", str(uuid.uuid4()))
+
+        # Bridge to graph nodes via contextvars (AG-UI endpoint doesn't
+        # pass request.state through to LangGraph graph invocations)
+        effective_mode_var.set(effective_mode)
+        rbac_ceiling_var.set(request.state.rbac_ceiling)
+        trace_id_var.set(request.state.trace_id)
 
         return await call_next(request)
 

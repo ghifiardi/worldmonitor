@@ -7,7 +7,8 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 
 from agent.audit import emit_audit
-from agent.state import GatraState
+from agent.request_context import effective_mode_var
+from agent.state import AgentMode, GatraState
 
 # ---------------------------------------------------------------------------
 # Intent pattern library
@@ -138,7 +139,18 @@ def route_from_intent(intent: dict[str, Any]) -> str:
 
 
 async def router_node(state: GatraState, config: RunnableConfig) -> dict:
-    """Entry node — parses query, audits routing decision, sets _route."""
+    """Entry node — parses query, audits routing decision, sets _route.
+
+    Also enforces effective_mode from the request context (set by
+    ServiceTokenMiddleware) so that the graph cannot run in a mode
+    higher than the token permits.
+    """
+    # Override state.mode from middleware-resolved effective_mode.
+    # This is the security bridge: even if the client sends mode="full",
+    # the middleware forces "lite" for soc-site tokens via contextvars.
+    ctx_mode = effective_mode_var.get("full")
+    mode_override = AgentMode(ctx_mode) if ctx_mode in ("full", "lite") else AgentMode.full
+
     intent = parse_intent(state.query)
     route = route_from_intent(intent)
 
@@ -159,6 +171,7 @@ async def router_node(state: GatraState, config: RunnableConfig) -> dict:
 
     return {
         "_route": route,
+        "mode": mode_override,
         "current_agent": "router",
         "pipeline_stage": "routing",
         "last_updated_at": datetime.now(timezone.utc),
