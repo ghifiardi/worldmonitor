@@ -1,22 +1,107 @@
 """GATRA Agent FastAPI server."""
 from __future__ import annotations
 
+import os
+import uuid
+
 from ag_ui_langgraph import add_langgraph_fastapi_endpoint
 from copilotkit import LangGraphAGUIAgent
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from agent.auth import TokenError, resolve_effective_mode, validate_service_token
 from agent.graph import build_graph
 
+# ---------------------------------------------------------------------------
+# Public paths that skip JWT validation
+# ---------------------------------------------------------------------------
+_PUBLIC_PREFIXES = {"/health", "/ready", "/dependencies", "/docs", "/openapi.json"}
+
+
+class ServiceTokenMiddleware(BaseHTTPMiddleware):
+    """Validate GATRA service tokens on every non-public request."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip auth for public paths and OPTIONS pre-flight
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        for prefix in _PUBLIC_PREFIXES:
+            if request.url.path == prefix or request.url.path.startswith(prefix + "/"):
+                return await call_next(request)
+
+        secret = os.environ.get("AGENT_SERVICE_SECRET", "")
+        if not secret:
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "AGENT_SERVICE_SECRET is not configured"},
+            )
+
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing or malformed Authorization header"},
+            )
+
+        token = auth_header[len("Bearer "):]
+        try:
+            claims = validate_service_token(
+                token, secret=secret, expected_aud="gatra-agent"
+            )
+        except TokenError as exc:
+            msg = str(exc)
+            if "audience" in msg:
+                return JSONResponse(status_code=403, content={"detail": msg})
+            # expired / malformed / missing claims → 401
+            return JSONResponse(status_code=401, content={"detail": msg})
+
+        # Route-scope check
+        route_scope: list[str] = claims.get("route_scope", [])
+        if not any(
+            request.url.path == scope or request.url.path.startswith(scope.rstrip("/") + "/")
+            for scope in route_scope
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"Token route_scope does not cover {request.url.path}"},
+            )
+
+        # Resolve effective mode and store state for downstream graph nodes
+        effective_mode = resolve_effective_mode(
+            source=claims.get("source", ""),
+            requested_mode=claims.get("requested_mode"),
+        )
+        request.state.claims = claims
+        request.state.effective_mode = effective_mode
+        request.state.rbac_ceiling = claims.get("role_ceiling", "analyst")
+        request.state.trace_id = claims.get("jti", str(uuid.uuid4()))
+
+        return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 app = FastAPI(title="GATRA Agent", version="0.1.0")
+
+origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    os.environ.get("SOC_SITE_ORIGIN", "https://soc.gatra.ai"),
+    os.environ.get("COPILOT_ORIGIN", "https://console.soc.gatra.ai"),
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000", "http://127.0.0.1:3001"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(ServiceTokenMiddleware)
 
 graph = build_graph()
 
@@ -52,8 +137,6 @@ async def ready() -> dict:
 
 @app.get("/dependencies")
 async def dependencies() -> dict:
-    import os
-
     import httpx
 
     base_url = os.getenv("WORLDMONITOR_API_URL", "https://worldmonitor-gatra.vercel.app")
