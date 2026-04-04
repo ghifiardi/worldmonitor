@@ -1,0 +1,9 @@
+{
+  "kill_chain_phase": "delivery",
+  "actor_attribution": "UNC2452",
+  "campaign": "SolarStorm-2",
+  "iocs": ["10.0.0.1", "evil.example.com", "abc123def456"],
+  "confidence": 0.85,
+  "status": "complete",
+  "mode": "lite"
+}

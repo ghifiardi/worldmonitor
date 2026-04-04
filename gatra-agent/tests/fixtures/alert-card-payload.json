@@ -1,0 +1,12 @@
+{
+  "severity": "HIGH",
+  "mitre_id": "T1566.001",
+  "mitre_name": "Spearphishing Attachment",
+  "confidence": 0.92,
+  "description": "Suspicious email with macro-enabled attachment detected",
+  "location_name": "Jakarta NOC",
+  "infrastructure": "mail-gw-01",
+  "timestamp": "2026-04-04T10:00:00Z",
+  "status": "complete",
+  "mode": "lite"
+}
