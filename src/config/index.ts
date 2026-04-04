@@ -3,6 +3,7 @@
 // VITE_VARIANT=tech → tech.worldmonitor.app (tech-focused)
 // VITE_VARIANT=full → worldmonitor.app (geopolitical)
 // VITE_VARIANT=finance → finance.worldmonitor.app (markets/trading)
+// VITE_VARIANT=soc → soc.worldmonitor-gatra.vercel.app (GATRA SOC demo)
 
 export { SITE_VARIANT } from './variant';
 
@@ -115,3 +116,12 @@ export {
 
 // Gulf FDI investment database
 export { GULF_INVESTMENTS } from './gulf-fdi';
+
+// Asset Profile for GATRA relevance scoring
+export {
+  DEFAULT_ASSET_PROFILE,
+  getActiveAssetProfile,
+  setActiveAssetProfile,
+  type AssetProfile,
+  type AssetProfileEntry,
+} from './asset-profile';

@@ -1,0 +1,46 @@
+title: Privilege Escalation via Service Account
+id: gatra-sigma-008
+status: stable
+description: >
+  Detects privilege escalation attempts using sudo, runas, or similar escalation mechanisms.
+  Adversaries who have compromised low-privilege service accounts on telco infrastructure may
+  attempt to escalate to root or administrator access to achieve full system control. This
+  activity is particularly dangerous on systems running core routing or authentication services.
+logsource:
+  category: endpoint
+  product: auditd
+detection:
+  escalation_action:
+    action|contains:
+      - sudo
+      - runas
+      - escalat
+  condition: escalation_action
+fields:
+  - host_id
+  - user
+  - action
+  - command_line
+  - process_name
+  - parent_process
+  - result
+  - src_ip
+falsepositives:
+  - Authorized system administrators performing routine maintenance via sudo
+  - Automated deployment scripts requiring privilege elevation
+  - Monitoring agents using service accounts with controlled privilege access
+level: medium
+tags:
+  - attack.privilege_escalation
+  - attack.t1548
+  - attack.t1548.003
+  - attack.t1078
+gatra_agent: privilege_escalation_agent
+mitre_technique: T1548.003
+kill_chain_phase: privilege-escalation
+recommended_actions:
+  - Verify the escalation is authorized by cross-checking change management tickets
+  - Review the command executed after privilege escalation
+  - Restrict sudo access to specific commands using sudoers configuration
+  - Enable comprehensive auditd rules for privileged command execution
+  - Investigate the parent process chain for signs of initial compromise

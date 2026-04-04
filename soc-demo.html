@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GATRA SOC — AI-Driven Security Operations Demo</title>
+    <meta name="description" content="GATRA AI-Driven SOC Demo — 5-agent autonomous security operations protecting 60M+ subscribers" />
+    <meta name="theme-color" content="#0a0f0a" />
+    <link rel="icon" type="image/x-icon" href="/favico/favicon.ico" />
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      :root {
+        --bg-primary: #0a0a0a;
+        --bg-secondary: #111;
+        --bg-tertiary: #1a1a1a;
+        --text-primary: #e4e4e4;
+        --text-secondary: #888;
+        --border-dim: #222;
+        --accent-green: #22c55e;
+        --accent-red: #ef4444;
+        --accent-amber: #eab308;
+        --accent-blue: #3b82f6;
+        --accent-purple: #9c27b0;
+        --accent-orange: #f97316;
+      }
+
+      body {
+        font-family: 'SF Mono', 'Monaco', 'Cascadia Code', 'Fira Code', monospace;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        height: 100vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* ── Header ──────────────────────────────────────── */
+      .soc-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 20px;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-dim);
+        flex-shrink: 0;
+        height: 40px;
+      }
+      .soc-header-left { display: flex; align-items: center; gap: 14px; }
+      .soc-logo {
+        font-size: 14px; font-weight: 700; letter-spacing: 1.5px;
+        background: linear-gradient(90deg, #ef4444, #f97316);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      }
+      .soc-subtitle { font-size: 10px; color: var(--text-secondary); }
+      .soc-header-right { display: flex; align-items: center; gap: 16px; }
+      .soc-stat { font-size: 10px; color: var(--text-secondary); }
+      .soc-stat b { color: var(--text-primary); }
+      .soc-status { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--accent-green); }
+      .soc-status-dot {
+        width: 6px; height: 6px; border-radius: 50%; background: var(--accent-green);
+        animation: pulse-dot 2s infinite;
+      }
+      @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+      /* ── Pipeline strip (top) ────────────────────────── */
+      .pipeline-strip {
+        flex-shrink: 0;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-dim);
+        padding: 12px 20px;
+        overflow-x: auto;
+      }
+      .pipeline-row {
+        display: flex;
+        align-items: center;
+        gap: 0;
+        min-width: max-content;
+      }
+      .pipeline-node {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        padding: 8px 16px;
+        border-radius: 6px;
+        border: 1px solid var(--border-dim);
+        background: var(--bg-tertiary);
+        min-width: 120px;
+        transition: all 0.4s ease;
+        position: relative;
+      }
+      .pipeline-node.active {
+        border-color: var(--node-color, var(--accent-green));
+        box-shadow: 0 0 12px color-mix(in srgb, var(--node-color, var(--accent-green)) 30%, transparent);
+      }
+      .pipeline-node.active .pipeline-agent { opacity: 1; }
+      .pipeline-node.done {
+        border-color: #333;
+        opacity: 0.6;
+      }
+      .pipeline-node.done::after {
+        content: '\2713';
+        position: absolute;
+        top: 4px;
+        right: 6px;
+        font-size: 10px;
+        color: var(--accent-green);
+      }
+      .pipeline-emoji { font-size: 18px; }
+      .pipeline-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+      .pipeline-agent { font-size: 9px; color: var(--text-secondary); opacity: 0.5; transition: opacity 0.3s; }
+      .pipeline-arrow {
+        font-size: 14px;
+        color: #333;
+        padding: 0 6px;
+        flex-shrink: 0;
+        transition: color 0.3s;
+      }
+      .pipeline-arrow.lit { color: var(--accent-green); }
+
+      /* ── Orchestration log (below pipeline) ──────────── */
+      .orch-strip {
+        flex-shrink: 0;
+        background: var(--bg-primary);
+        border-bottom: 1px solid var(--border-dim);
+        padding: 6px 20px;
+        font-size: 10px;
+        color: var(--text-secondary);
+        height: 28px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        overflow: hidden;
+      }
+      .orch-strip .orch-label { color: var(--accent-amber); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; flex-shrink: 0; }
+      .orch-strip .orch-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .orch-strip .orch-time { flex-shrink: 0; color: #444; }
+
+      /* ── Bottom layout (dashboard + chat) ─────────────── */
+      .soc-bottom {
+        flex: 1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0;
+        overflow: hidden;
+      }
+      @media (max-width: 900px) {
+        .soc-bottom { grid-template-columns: 1fr; }
+      }
+      .soc-panel-wrapper { overflow-y: auto; border-right: 1px solid var(--border-dim); }
+      .soc-panel-wrapper:last-child { border-right: none; }
+      .soc-panel-header {
+        position: sticky; top: 0; z-index: 10;
+        padding: 8px 16px;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-dim);
+        font-size: 11px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.5px;
+        display: flex; align-items: center; gap: 8px;
+      }
+      .soc-panel-body { font-size: 12px; line-height: 1.5; }
+
+      /* ── Override World Monitor panel styles ──────────── */
+      .soc-panel-body .panel { border:none!important; border-radius:0!important; background:transparent!important; box-shadow:none!important; }
+      .soc-panel-body .panel-header { display:none!important; }
+      .soc-panel-body .panel-content { padding:0!important; max-height:none!important; overflow:visible!important; }
+
+      .soc-chat-container { display: flex; flex-direction: column; height: 100%; }
+
+      .soc-loading {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        height: 200px; gap: 12px; color: var(--text-secondary); font-size: 12px;
+      }
+      .soc-spinner {
+        width: 24px; height: 24px;
+        border: 2px solid var(--border-dim); border-top-color: var(--accent-green);
+        border-radius: 50%; animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* ── Demo scenario button ────────────────────────── */
+      .demo-btn {
+        padding: 4px 12px;
+        font-size: 10px;
+        font-family: inherit;
+        border: 1px solid var(--accent-amber);
+        background: transparent;
+        color: var(--accent-amber);
+        border-radius: 3px;
+        cursor: pointer;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        transition: all 0.2s;
+        white-space: nowrap;
+      }
+      .demo-btn:hover { background: var(--accent-amber); color: #000; }
+      .demo-btn:disabled { opacity: 0.3; cursor: default; }
+      .demo-btn.running { border-color: var(--accent-green); color: var(--accent-green); }
+
+      /* ── Mobile tab switcher (hidden on desktop) ──────── */
+      .mobile-tabs {
+        display: none;
+        background: var(--bg-secondary);
+        border-bottom: 1px solid var(--border-dim);
+      }
+      .mobile-tabs button {
+        flex: 1;
+        padding: 10px 0;
+        font-family: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        border: none;
+        background: transparent;
+        color: var(--text-secondary);
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        transition: all 0.2s;
+      }
+      .mobile-tabs button.active {
+        color: var(--accent-green);
+        border-bottom-color: var(--accent-green);
+      }
+
+      /* ── MOBILE RESPONSIVE ───────────────────────────── */
+      @media (max-width: 768px) {
+        body { height: 100vh; height: 100dvh; }
+
+        /* Header: stack logo above stats */
+        .soc-header {
+          flex-wrap: wrap;
+          height: auto;
+          padding: 8px 12px;
+          gap: 6px;
+        }
+        .soc-header-left { width: 100%; justify-content: space-between; }
+        .soc-subtitle { display: none; }
+        .soc-header-right {
+          width: 100%;
+          gap: 8px;
+          justify-content: space-between;
+          flex-wrap: wrap;
+        }
+        .soc-stat { font-size: 9px; }
+
+        /* Pipeline: compact horizontal scroll with smaller nodes */
+        .pipeline-strip { padding: 8px 12px; }
+        .pipeline-node {
+          min-width: 70px;
+          padding: 6px 8px;
+        }
+        .pipeline-emoji { font-size: 16px; }
+        .pipeline-label { font-size: 8px; letter-spacing: 0.3px; }
+        .pipeline-agent { font-size: 7px; }
+        .pipeline-arrow { font-size: 10px; padding: 0 3px; }
+
+        /* Orch strip */
+        .orch-strip { padding: 4px 12px; font-size: 9px; height: 24px; }
+
+        /* Show mobile tab switcher */
+        .mobile-tabs { display: flex; }
+
+        /* Bottom: stacked, only active tab visible */
+        .soc-bottom {
+          grid-template-columns: 1fr;
+          overflow: hidden;
+        }
+        .soc-panel-wrapper {
+          border-right: none !important;
+          display: none;
+        }
+        .soc-panel-wrapper.mobile-active {
+          display: flex;
+          flex-direction: column;
+          overflow-y: auto;
+          /* fill remaining space below tabs */
+          min-height: 0;
+        }
+        .soc-panel-header { padding: 6px 12px; font-size: 10px; }
+        .soc-panel-body { font-size: 11px; }
+
+        /* Chat panel help hint */
+        .soc-panel-header span[style*="margin-left"] { display: none; }
+      }
+
+      /* ── TABLET (between mobile and desktop) ──────────── */
+      @media (min-width: 769px) and (max-width: 1024px) {
+        .pipeline-node { min-width: 90px; padding: 6px 10px; }
+        .pipeline-label { font-size: 9px; }
+        .pipeline-agent { font-size: 8px; }
+        .soc-stat { font-size: 9px; }
+      }
+
+      /* ── Touch improvements ──────────────────────────── */
+      @media (hover: none) and (pointer: coarse) {
+        .demo-btn { padding: 8px 16px; font-size: 12px; min-height: 36px; }
+        .mobile-tabs button { padding: 12px 0; font-size: 12px; }
+      }
+    </style>
+    <link rel="stylesheet" href="/src/styles/main.css" />
+  </head>
+  <body>
+    <!-- Header -->
+    <div class="soc-header">
+      <div class="soc-header-left">
+        <span class="soc-logo">GATRA SOC</span>
+        <span class="soc-subtitle">AI-Driven Security Operations Center</span>
+      </div>
+      <div class="soc-header-right">
+        <span class="soc-stat"><b>93M+</b> subscribers protected</span>
+        <span class="soc-stat"><b>&lt;2 min</b> MTTD</span>
+        <span class="soc-stat"><b>5</b> AI agents</span>
+        <button class="demo-btn" id="demoBtn">Run Scenario</button>
+        <div class="soc-status">
+          <span class="soc-status-dot"></span>
+          <span>LIVE</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pipeline visualization -->
+    <div class="pipeline-strip">
+      <div class="pipeline-row" id="pipelineRow">
+        <div class="pipeline-node" data-step="ingest" style="--node-color:#64748b">
+          <span class="pipeline-emoji">📡</span>
+          <span class="pipeline-label">SIEM Ingest</span>
+          <span class="pipeline-agent">BigQuery / Pub/Sub</span>
+        </div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-node" data-step="ada" style="--node-color:#4caf50">
+          <span class="pipeline-emoji">🔍</span>
+          <span class="pipeline-label">ADA Detect</span>
+          <span class="pipeline-agent">Isolation Forest + LSTM</span>
+        </div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-node" data-step="taa" style="--node-color:#ff9800">
+          <span class="pipeline-emoji">🎯</span>
+          <span class="pipeline-label">TAA Analyze</span>
+          <span class="pipeline-agent">Actor-Critic RL</span>
+        </div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-node" data-step="cra" style="--node-color:#f44336">
+          <span class="pipeline-emoji">🛡️</span>
+          <span class="pipeline-label">CRA Respond</span>
+          <span class="pipeline-agent">Automated Containment</span>
+        </div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-node" data-step="cla" style="--node-color:#2196f3">
+          <span class="pipeline-emoji">📋</span>
+          <span class="pipeline-label">CLA Comply</span>
+          <span class="pipeline-agent">Audit & Compliance</span>
+        </div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-node" data-step="rva" style="--node-color:#9c27b0">
+          <span class="pipeline-emoji">⚠️</span>
+          <span class="pipeline-label">RVA Assess</span>
+          <span class="pipeline-agent">CVSS + EPSS</span>
+        </div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-node" data-step="learn" style="--node-color:#22c55e">
+          <span class="pipeline-emoji">🧠</span>
+          <span class="pipeline-label">Learn</span>
+          <span class="pipeline-agent">Self-Learning Loop</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Orchestration log line -->
+    <div class="orch-strip" id="orchStrip">
+      <span class="orch-label">Pipeline</span>
+      <span class="orch-msg" id="orchMsg">Idle — click "Run Scenario" to start a live demonstration</span>
+      <span class="orch-time" id="orchTime"></span>
+    </div>
+
+    <!-- Mobile tab switcher (hidden on desktop) -->
+    <div class="mobile-tabs" id="mobileTabs">
+      <button class="active" data-tab="dashboard">🛡️ Dashboard</button>
+      <button data-tab="chat">💬 Chat</button>
+    </div>
+
+    <!-- Bottom: Dashboard + Chat -->
+    <div class="soc-bottom">
+      <div class="soc-panel-wrapper mobile-active" data-tab="dashboard">
+        <div class="soc-panel-header">
+          <span>🛡️</span> Agent Dashboard
+        </div>
+        <div class="soc-panel-body" id="gatra-soc-mount">
+          <div class="soc-loading">
+            <div class="soc-spinner"></div>
+            <span>Connecting to GATRA agents...</span>
+          </div>
+        </div>
+      </div>
+      <div class="soc-panel-wrapper" data-tab="chat">
+        <div class="soc-panel-header">
+          <span>💬</span> SOC COMMS — Interactive Agent Chat
+          <span style="margin-left:auto;font-size:9px;opacity:0.4;font-weight:400;text-transform:none;">Type /help or /playbook for commands</span>
+        </div>
+        <div class="soc-panel-body soc-chat-container" id="soc-chat-mount">
+          <div class="soc-loading">
+            <div class="soc-spinner"></div>
+            <span>Initializing SOC COMMS...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/soc-demo-main.ts"></script>
+  </body>
+</html>

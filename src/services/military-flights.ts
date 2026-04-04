@@ -634,30 +634,90 @@ function parseAirplanesLiveData(data: AirplanesLiveResponse): GulfFlight[] {
 }
 
 /**
- * Fetch ALL flights for the Gulf + MENA region via /api/flights proxy.
- * The proxy (Vercel edge function) queries airplanes.live across 6 coverage
- * points in parallel, deduplicates, and caches for 45 s — so the browser
- * makes a single fetch and gets a merged response.
+ * Fetch ALL flights for the Gulf + MENA region.
+ *
+ * Strategy:
+ *  1. Try /api/flights proxy (Vercel edge fn — one request, server-side dedup).
+ *  2. If that fails (dev mode, CORS, Vercel challenge…), fall back to calling
+ *     airplanes.live directly from the browser (CORS: *) with 2 broad points
+ *     to avoid rate-limiting.
  */
+// Coverage points for direct browser→airplanes.live queries.
+// Single broad point first (covers most of Gulf/MENA), then secondary if needed.
+const DIRECT_POINTS = [
+  { lat: 28, lon: 47, r: 350 },   // Persian Gulf + Saudi + Iraq (primary)
+  { lat: 35, lon: 48, r: 350 },   // Turkey + Iran + Levant (secondary)
+];
+
+async function fetchWithTimeout(url: string, timeoutMs = 10_000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: ctrl.signal, headers: { 'Accept': 'application/json' } });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchViaProxy(): Promise<AirplanesLiveAc[]> {
+  const resp = await fetchWithTimeout('/api/flights');
+  if (!resp.ok) throw new Error(`proxy ${resp.status}`);
+  const ct = resp.headers.get('content-type') || '';
+  if (!ct.includes('json')) throw new Error('proxy returned non-JSON');
+  const data: AirplanesLiveResponse = await resp.json();
+  return data.ac || [];
+}
+
+async function fetchDirect(): Promise<AirplanesLiveAc[]> {
+  // Fetch points sequentially to avoid overwhelming browser connections during page load
+  const seen = new Set<string>();
+  const allAc: AirplanesLiveAc[] = [];
+
+  for (const pt of DIRECT_POINTS) {
+    try {
+      const resp = await fetchWithTimeout(
+        `https://api.airplanes.live/v2/point/${pt.lat}/${pt.lon}/${pt.r}`,
+      );
+      if (!resp.ok) continue;
+      const data: AirplanesLiveResponse = await resp.json();
+      for (const ac of data.ac || []) {
+        if (ac.hex && !seen.has(ac.hex)) { seen.add(ac.hex); allAc.push(ac); }
+      }
+    } catch {
+      // Point failed — continue to next
+    }
+    // If we already have enough from the first point, skip the rest
+    if (allAc.length >= 10) break;
+  }
+
+  if (allAc.length === 0) throw new Error('direct: 0 aircraft from all points');
+  return allAc;
+}
+
 export async function fetchAllGulfFlights(): Promise<GulfFlight[]> {
   return gulfBreaker.execute(async () => {
-    // Check client-side cache
+    // Client-side cache
     if (gulfFlightCache && Date.now() - gulfFlightCache.timestamp < GULF_CACHE_TTL) {
       return gulfFlightCache.data;
     }
 
-    const resp = await fetch('/api/flights', {
-      headers: { 'Accept': 'application/json' },
-    });
-    if (!resp.ok) throw new Error(`/api/flights ${resp.status}`);
-    const data: AirplanesLiveResponse = await resp.json();
+    // Strategy: try direct airplanes.live first (CORS: *, works from any domain).
+    // Fallback to /api/flights proxy (Vercel edge fn — works on deployment URLs).
+    let ac: AirplanesLiveAc[];
+    try {
+      ac = await fetchDirect();
+    } catch {
+      try {
+        ac = await fetchViaProxy();
+      } catch (e) {
+        console.error('[Gulf Flights] all sources failed:', (e as Error).message);
+        throw e;
+      }
+    }
 
-    const flights = parseAirplanesLiveData(data);
-
-    // Update cache
+    const flights = parseAirplanesLiveData({ ac, now: Date.now(), total: ac.length });
     gulfFlightCache = { data: flights, timestamp: Date.now() };
-
-    console.log(`[Gulf Flights] ${flights.length} aircraft (${flights.filter(f => f.isMilitary).length} military, ${flights.filter(f => !f.isMilitary).length} commercial)`);
+    console.log(`[Gulf Flights] ${flights.length} aircraft (${flights.filter(f => f.isMilitary).length} mil)`);
     return flights;
   }, []);
 }

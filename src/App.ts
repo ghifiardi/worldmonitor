@@ -89,6 +89,7 @@ import { CVEFeedPanel } from '@/panels/cve-feed-panel';
 import { CiiScorePanel } from '@/panels/cii-score-panel';
 import { PredictionSignalsPanel } from '@/panels/prediction-signals-panel';
 import { A2aSecurityPanel } from '@/panels/a2a-security-panel';
+import { SocialThreatsPanel } from '@/panels/social-threats-panel';
 import { PersonalSecurityPosturePanel } from '@/panels/personal-security-posture-panel';
 import { SocChatPanel } from '@/panels/soc-chat-panel';
 import { refreshGatraData, ingestConflictCorrelations } from '@/gatra/connector';
@@ -743,8 +744,8 @@ export class App {
   }
 
   private setupPizzIntIndicator(): void {
-    // Skip DEFCON indicator for tech/startup and finance variants
-    if (SITE_VARIANT === 'tech' || SITE_VARIANT === 'finance') return;
+    // Skip DEFCON indicator for tech/startup, finance, and soc variants
+    if (SITE_VARIANT === 'tech' || SITE_VARIANT === 'finance' || SITE_VARIANT === 'soc') return;
 
     this.pizzintIndicator = new PizzIntIndicator();
     const headerLeft = this.container.querySelector('.header-left');
@@ -1925,6 +1926,15 @@ export class App {
               <span class="variant-icon">🛡️</span>
               <span class="variant-label">${t('header.cyber')}</span>
             </a>
+            <span class="variant-divider"></span>
+            <a href="${this.isDesktopApp || this.isLocalDev ? '#' : (SITE_VARIANT === 'soc' ? '#' : 'https://soc.worldmonitor-gatra.vercel.app')}"
+               class="variant-option ${SITE_VARIANT === 'soc' ? 'active' : ''}"
+               data-variant="soc"
+               ${!(this.isDesktopApp || this.isLocalDev) && SITE_VARIANT !== 'soc' ? 'target="_blank" rel="noopener"' : ''}
+               title="GATRA SOC${SITE_VARIANT === 'soc' ? ` ${t('common.currentVariant')}` : ''}">
+              <span class="variant-icon">🎯</span>
+              <span class="variant-label">SOC</span>
+            </a>
           </div>
           <span class="logo">MONITOR</span><span class="version">v${__APP_VERSION__}</span>${BETA_MODE ? '<span class="beta-badge">BETA</span>' : ''}
           <a href="https://x.com/eliehabib" target="_blank" rel="noopener" class="credit-link">
@@ -2440,8 +2450,8 @@ export class App {
     this.panels['etf-flows'] = new ETFFlowsPanel();
     this.panels['stablecoins'] = new StablecoinPanel();
 
-    // GATRA SOC Panel (cyber variant)
-    if (SITE_VARIANT === 'cyber') {
+    // GATRA SOC Panel (cyber + soc variants)
+    if (SITE_VARIANT === 'cyber' || SITE_VARIANT === 'soc') {
       const gatraPanel = new GatraSOCDashboardPanel();
       this.panels['gatra-soc'] = gatraPanel;
 
@@ -2462,6 +2472,9 @@ export class App {
 
       const a2aSecurityPanel = new A2aSecurityPanel();
       this.panels['a2a-security'] = a2aSecurityPanel;
+
+      const socialThreatsPanel = new SocialThreatsPanel();
+      this.panels['social-threats'] = socialThreatsPanel;
 
       const pspPanel = new PersonalSecurityPosturePanel();
       this.panels['personal-security-posture'] = pspPanel;
@@ -3268,8 +3281,8 @@ export class App {
     ];
 
     // Load intelligence signals for CII calculation (protests, military, outages)
-    // Only for geopolitical variant - tech variant doesn't need CII/focal points
-    if (SITE_VARIANT === 'full') {
+    // Full + cyber variants need this; tech/finance don't need CII/focal points
+    if (SITE_VARIANT === 'full' || SITE_VARIANT === 'cyber' || SITE_VARIANT === 'soc') {
       tasks.push({ name: 'intelligence', task: runGuarded('intelligence', () => this.loadIntelligenceSignals()) });
     }
 
@@ -3291,23 +3304,28 @@ export class App {
       tasks.push({ name: 'techReadiness', task: runGuarded('techReadiness', () => (this.panels['tech-readiness'] as TechReadinessPanel)?.refresh()) });
     }
 
-    // GATRA SOC data (cyber variant)
-    if (SITE_VARIANT === 'cyber' && this.mapLayers.gatraAlerts) {
+    // GATRA SOC data (cyber + soc variants)
+    if ((SITE_VARIANT === 'cyber' || SITE_VARIANT === 'soc') && this.mapLayers.gatraAlerts) {
       tasks.push({ name: 'gatra', task: runGuarded('gatra', () => this.loadGatraData()) });
     }
 
-    // CVE Feed (cyber variant)
-    if (SITE_VARIANT === 'cyber') {
+    // CVE Feed (cyber + soc variants)
+    if (SITE_VARIANT === 'cyber' || SITE_VARIANT === 'soc') {
       tasks.push({ name: 'cve-feed', task: runGuarded('cve-feed', () => this.loadCVEFeed()) });
     }
 
-    // Ransomware Tracker (cyber variant)
-    if (SITE_VARIANT === 'cyber') {
+    // Social Threat Intel (cyber + soc variants)
+    if (SITE_VARIANT === 'cyber' || SITE_VARIANT === 'soc') {
+      tasks.push({ name: 'social-threats', task: runGuarded('social-threats', () => this.loadSocialThreats()) });
+    }
+
+    // Ransomware Tracker (cyber + soc variants)
+    if (SITE_VARIANT === 'cyber' || SITE_VARIANT === 'soc') {
       tasks.push({ name: 'ransomware-tracker', task: runGuarded('ransomware-tracker', () => this.loadRansomwareData()) });
     }
 
-    // IoC Lookup feed (cyber variant)
-    if (SITE_VARIANT === 'cyber') {
+    // IoC Lookup feed (cyber + soc variants)
+    if (SITE_VARIANT === 'cyber' || SITE_VARIANT === 'soc') {
       tasks.push({ name: 'ioc-lookup', task: runGuarded('ioc-lookup', () => this.loadIoCLookupFeed()) });
     }
 
@@ -4266,6 +4284,15 @@ export class App {
     }
   }
 
+  private async loadSocialThreats(): Promise<void> {
+    try {
+      const socialPanel = this.panels['social-threats'] as SocialThreatsPanel | undefined;
+      await socialPanel?.refresh();
+    } catch (error) {
+      console.error('[App] Social threats load failed:', error);
+    }
+  }
+
   private async loadRansomwareData(): Promise<void> {
     try {
       const ransomwarePanel = this.panels['ransomware-tracker'] as RansomwareTrackerPanel | undefined;
@@ -4849,9 +4876,9 @@ export class App {
     this.scheduleRefresh('oil', () => this.loadOilAnalytics(), 30 * 60 * 1000);
     this.scheduleRefresh('spending', () => this.loadGovernmentSpending(), 60 * 60 * 1000);
 
-    // Refresh intelligence signals for CII (geopolitical variant only)
-    // This handles outages, protests, military - updates map when layers enabled
-    if (SITE_VARIANT === 'full') {
+    // Refresh intelligence signals for CII (full + cyber + soc variants)
+    // This handles outages, protests, military, gulf flights - updates map when layers enabled
+    if (SITE_VARIANT === 'full' || SITE_VARIANT === 'cyber' || SITE_VARIANT === 'soc') {
       this.scheduleRefresh('intelligence', () => {
         this.intelligenceCache = {}; // Clear cache to force fresh fetch
         return this.loadIntelligenceSignals();
@@ -4870,12 +4897,16 @@ export class App {
       return this.loadCyberThreats();
     }, 10 * 60 * 1000, () => CYBER_LAYER_ENABLED && this.mapLayers.cyberThreats);
 
-    // GATRA SOC data (60s refresh, cyber variant only)
-    if (SITE_VARIANT === 'cyber') {
-      this.scheduleRefresh('gatra', () => this.loadGatraData(), 60 * 1000, () => this.mapLayers.gatraAlerts);
+    // GATRA SOC data — DISABLED: BigQuery endpoint returning 500s, uses mock fallback only
+    // Re-enable once BigQuery connection is fixed. Was: 60 * 1000 (60s)
+    if (SITE_VARIANT === 'cyber' || SITE_VARIANT === 'soc') {
+      this.scheduleRefresh('gatra', () => this.loadGatraData(), 10 * 60 * 1000, () => this.mapLayers.gatraAlerts);
 
       // CVE Feed (10 min refresh, cyber variant only)
       this.scheduleRefresh('cve-feed', () => this.loadCVEFeed(), 10 * 60 * 1000);
+
+      // Social Threat Intel (10 min refresh, cyber variant only)
+      this.scheduleRefresh('social-threats', () => this.loadSocialThreats(), 10 * 60 * 1000);
 
       // Ransomware Tracker (5 min refresh, cyber variant only)
       this.scheduleRefresh('ransomware-tracker', () => this.loadRansomwareData(), 5 * 60 * 1000);

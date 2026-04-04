@@ -1,0 +1,44 @@
+title: DNS Tunneling via High Query Volume
+id: gatra-sigma-003
+status: stable
+description: >
+  Detects potential DNS tunneling activity characterized by high volumes of outbound DNS traffic.
+  Attackers use DNS tunneling to exfiltrate data or establish covert C2 channels by encoding
+  payloads within DNS queries. Telco infrastructure is a prime target due to DNS resolvers
+  handling high query volumes that can mask tunneling traffic.
+logsource:
+  category: network_flow
+  product: dns
+detection:
+  dns_volume:
+    protocol: dns
+    bytes_sent|gte: 5000
+  condition: dns_volume
+fields:
+  - src_ip
+  - dst_ip
+  - dst_port
+  - protocol
+  - bytes_sent
+  - query_count
+  - query_name
+  - host_id
+falsepositives:
+  - Large AXFR zone transfer requests between authoritative DNS servers
+  - DNSSEC key rollover operations
+  - Bulk DNS record updates from provisioning systems
+level: high
+tags:
+  - attack.command_and_control
+  - attack.exfiltration
+  - attack.t1071.004
+  - attack.t1048.003
+gatra_agent: dns_anomaly_agent
+mitre_technique: T1071.004
+kill_chain_phase: command-and-control
+recommended_actions:
+  - Inspect DNS query payloads for encoding patterns (base32, base64 subdomains)
+  - Block the destination IP at DNS resolver level
+  - Enable DNS Response Policy Zones (RPZ) for suspicious domains
+  - Review DNS query logs for entropy analysis of subdomain labels
+  - Implement DNS query rate-limiting per source IP

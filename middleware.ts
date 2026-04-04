@@ -38,6 +38,11 @@ export default function middleware(request: Request) {
     return;
   }
 
+  // Allow GATRA agent pipeline calls (internal service-to-service)
+  if (ua.startsWith('GATRA-Agent/') || path === '/api/agent') {
+    return;
+  }
+
   // Block bots from all API routes
   if (BOT_UA.test(ua)) {
     return new Response('{"error":"Forbidden"}', {

@@ -1313,6 +1313,20 @@ export interface GatraAlert {
   infrastructure: string;
   timestamp: Date;
   agent: GatraAgentName;
+
+  // ── Asset relevance scoring (computed by connector) ──
+  /** 0–100 relevance score against the active asset profile. */
+  relevanceScore?: number;
+  /** Matched vendor(s) from the asset profile. */
+  matchedVendors?: string[];
+  /** Matched product(s) from the asset profile. */
+  matchedProducts?: string[];
+  /** Whether the alert is relevant to the customer's industry. */
+  industryMatch?: boolean;
+  /** Original CISA KEV vendorProject (preserved for scoring). */
+  kevVendor?: string;
+  /** Original CISA KEV product. */
+  kevProduct?: string;
 }
 
 export interface GatraAgentStatus {
@@ -1435,6 +1449,24 @@ export interface CVEItem {
   references: string[];
   epssScore: number | null; // from FIRST EPSS if available
   cweId: string | null;
+}
+
+// ============================================
+// SOCIAL THREAT INTELLIGENCE TYPES
+// ============================================
+
+export type SocialPlatform = 'bluesky' | 'hackernews' | 'mastodon';
+
+export interface SocialThreatPost {
+  id: string;
+  platform: SocialPlatform;
+  author: string;
+  authorDisplayName: string;
+  content: string;
+  url: string;
+  postedAt: Date;
+  engagement: { likes: number; reposts: number; replies: number };
+  threatKeywords: string[];
 }
 
 // ============================================

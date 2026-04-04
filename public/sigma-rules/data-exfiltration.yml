@@ -1,0 +1,47 @@
+title: Data Exfiltration from Critical Asset
+id: gatra-sigma-005
+status: stable
+description: >
+  Detects large outbound data transfers from critical-rated infrastructure assets. A transfer
+  volume exceeding 1 MB in a single flow from a critical asset such as a core router, authentication
+  server, or firewall may indicate unauthorized data exfiltration of subscriber records, routing
+  tables, or authentication credentials.
+logsource:
+  category: network_flow
+  product: firewall
+detection:
+  large_outbound:
+    direction: outbound
+    bytes_sent|gte: 1000000
+  critical_asset:
+    host_id|asset_criticality: critical
+  condition: large_outbound and critical_asset
+fields:
+  - host_id
+  - src_ip
+  - dst_ip
+  - dst_port
+  - direction
+  - bytes_sent
+  - bytes_received
+  - protocol
+  - duration
+falsepositives:
+  - Authorized firmware update downloads initiated from critical network devices
+  - Scheduled configuration backup to approved off-site repositories
+  - Log shipping to SIEM from core infrastructure
+level: high
+tags:
+  - attack.exfiltration
+  - attack.t1048
+  - attack.t1041
+  - attack.t1567
+gatra_agent: exfiltration_detection_agent
+mitre_technique: T1048.003
+kill_chain_phase: exfiltration
+recommended_actions:
+  - Block the outbound flow immediately and quarantine the asset
+  - Identify the destination IP and check against threat intelligence feeds
+  - Review recent configuration changes and admin sessions on the asset
+  - Preserve all network flow logs for forensic analysis
+  - Notify DPO team for potential subscriber data breach assessment per UU PDP

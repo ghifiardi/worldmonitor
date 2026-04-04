@@ -633,6 +633,7 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
         settings: resolve(__dirname, 'settings.html'),
         liveChannels: resolve(__dirname, 'live-channels.html'),
+        socDemo: resolve(__dirname, 'soc-demo.html'),
       },
       output: {
         manualChunks(id) {

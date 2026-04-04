@@ -1,0 +1,47 @@
+title: Log Clearing on EOL Hardware
+id: gatra-sigma-009
+status: stable
+description: >
+  Detects log clearing or deletion events on devices with outdated firmware. Attackers clearing
+  logs after a compromise attempt to cover their tracks and remove forensic evidence. When
+  combined with outdated firmware — which may have weakened audit controls — this activity
+  strongly indicates an active intrusion and evidence destruction on telco infrastructure.
+logsource:
+  category: endpoint
+  product: syslog
+detection:
+  log_clear_action:
+    action|contains:
+      - clear
+      - delete
+    event_type|contains: log
+  outdated_firmware:
+    host_id|asset_firmware_outdated: true
+  condition: log_clear_action and outdated_firmware
+fields:
+  - host_id
+  - user
+  - action
+  - event_type
+  - log_source
+  - command_line
+  - src_ip
+falsepositives:
+  - Authorized log rotation and archiving performed by operations team
+  - Scheduled log maintenance scripts executing on a planned cycle
+  - SIEM agent log forwarding with local cleanup after successful transmission
+level: high
+tags:
+  - attack.defense_evasion
+  - attack.t1070
+  - attack.t1070.001
+  - attack.t1070.002
+gatra_agent: log_tampering_agent
+mitre_technique: T1070.001
+kill_chain_phase: defense-evasion
+recommended_actions:
+  - Immediately enable remote log forwarding if not already configured
+  - Recover available log fragments from SIEM and network captures
+  - Initiate forensic acquisition of the device before further tampering
+  - Prioritize firmware upgrade to restore integrity of audit controls
+  - Escalate to IR team — log clearing is a critical indicator of active intrusion

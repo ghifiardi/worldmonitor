@@ -1,0 +1,44 @@
+title: Brute Force Against Vulnerable Auth Server
+id: gatra-sigma-002
+status: stable
+description: >
+  Detects brute-force authentication attempts targeting an authentication server that has at least
+  one CVE with CVSS score 8.0 or higher. Repeated login failures against a vulnerable auth server
+  significantly increase the likelihood of successful credential compromise.
+logsource:
+  category: authentication
+  product: radius
+detection:
+  auth_events:
+    action|contains: login
+    event_type: authentication
+  asset_check:
+    host_id|asset_cvss_gte: 8.0
+  condition: auth_events and asset_check
+fields:
+  - host_id
+  - src_ip
+  - user
+  - action
+  - event_type
+  - result
+  - failure_count
+falsepositives:
+  - Misconfigured authentication clients with stale credentials
+  - Scheduled password rotation scripts with incorrect config
+  - Network equipment performing repeated re-authentication
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1110
+  - attack.t1110.001
+  - attack.t1110.003
+gatra_agent: brute_force_detection_agent
+mitre_technique: T1110.003
+kill_chain_phase: credential-access
+recommended_actions:
+  - Block source IP address at perimeter firewall
+  - Enable account lockout policy on the auth server
+  - Patch identified high-CVSS CVEs on the authentication server immediately
+  - Review all successful logins from the attacking IP in the last 30 days
+  - Enable multi-factor authentication for all subscriber auth endpoints

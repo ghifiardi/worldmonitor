@@ -1,0 +1,11 @@
+{
+  "cve_id": "CVE-2026-1234",
+  "cvss_v4_score": 9.1,
+  "epss_percentile": 0.95,
+  "affected_products": ["Apache Log4j 2.x"],
+  "patch_available": true,
+  "cisa_kev": true,
+  "recommendation": "Apply patch immediately. Exploitation observed in the wild.",
+  "status": "complete",
+  "mode": "lite"
+}

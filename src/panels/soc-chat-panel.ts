@@ -71,6 +71,8 @@ const GATRA_AGENTS: GatraAgentDef[] = [
       /\b[0-9a-fA-F]{32}\b/i, /\b[0-9a-fA-F]{40}\b/i, /\b[0-9a-fA-F]{64}\b/i,
       /(?:scan|check|lookup|search|query)\s/i,
       /\b(?:\d{1,3}\.){3}\d{1,3}\b/,
+      /\bsigma\b/i,
+      /\bsigma\s+scan\b/i,
       /@ada\b/i,
     ],
   },
@@ -81,7 +83,7 @@ const GATRA_AGENTS: GatraAgentDef[] = [
     triggerPatterns: [
       /why.*(escalat|triag|prioriti)/i,
       /threat/i, /risk\s*(assess|level|score)/i,
-      /mitre|att&ck|kill\s*chain|technique|tactic/i,
+      /mitre|att&ck|kill\s*chain|technique|tactic/i, /\bT\d{4}(?:\.\d{3})?\b/,
       /triag/i, /prioriti/i, /escalat/i,
       /what.*(should|next|first)/i, /rank|order/i, /queue/i,
       // Expanded: threat intel, APTs (numbered + named), IOCs, phishing, social engineering, campaigns
@@ -242,6 +244,95 @@ function extractIoC(text: string): { type: IoCType; value: string } | null {
   return null;
 }
 
+function tryExtractJson(text: string): Record<string, unknown> | null {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[0]);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) return parsed;
+  } catch { /* not valid JSON */ }
+  return null;
+}
+
+async function runSigmaScan(event: Record<string, unknown>): Promise<string> {
+  try {
+    const res = await fetch('/api/sigma-scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: [event] }),
+    });
+    if (!res.ok) return `Sigma scan failed: HTTP ${res.status}`;
+    const data = await res.json();
+    const result = data.results?.[0];
+    if (!result || result.matches.length === 0) {
+      return `Sigma scan complete \u2014 no matches (${data.rules_loaded} rules evaluated)`;
+    }
+
+    let output = `Sigma scan complete \u2014 ${result.matches.length} match${result.matches.length > 1 ? 'es' : ''}\n`;
+    for (const m of result.matches) {
+      const sev = m.effective_severity.toUpperCase();
+      const elevated = m.rule_level !== m.effective_severity
+        ? ` (elevated from ${m.rule_level.toUpperCase()})` : '';
+      output += `\n  ${sev}${elevated}: ${m.title}\n`;
+      output += `  Rule: ${m.rule_id}`;
+      if (m.rule_metadata.mitre_technique) output += ` | MITRE: ${m.rule_metadata.mitre_technique}`;
+      output += '\n';
+      output += `  Matched: ${Object.entries(m.enrichment.matched_fields).map(([k, v]) => `${k}=${v}`).join(', ')}\n`;
+      if (m.enrichment.severity_reason) output += `  Elevated because: ${m.enrichment.severity_reason.replace(/^Elevated [^:]+: /, '')}\n`;
+      if (m.asset_context) {
+        output += `\n  Asset: ${m.asset_context.host_id} (${m.asset_context.name})\n`;
+        output += `  Criticality: ${m.asset_context.criticality.toUpperCase()} | Zone: ${m.asset_context.network_zone}\n`;
+        if (m.asset_context.unpatched_cves.length > 0) {
+          output += `  Unpatched: ${m.asset_context.unpatched_cves.join(', ')}\n`;
+        }
+        if (m.asset_context.firmware_outdated) output += `  Firmware: outdated\n`;
+        output += `  Patch status: ${m.asset_context.patch_status.toUpperCase()}\n`;
+      }
+      if (m.recommendations.length > 0) {
+        output += `\n  Recommendations:\n`;
+        m.recommendations.forEach((r, i) => { output += `  ${i + 1}. ${r}\n`; });
+      }
+      const agent = m.rule_metadata.gatra_agent || (m.effective_severity === 'critical' ? 'cra' : 'taa');
+      const agentAction = agent === 'cra' ? 'CRA containment candidate (requires analyst approval)' : `Escalate to @${agent}`;
+      output += `\n  ${agentAction}`;
+    }
+    return output;
+  } catch (err) {
+    return `Sigma scan error: ${err instanceof Error ? err.message : 'Unknown error'}`;
+  }
+}
+
+// ── MITRE ATT&CK technique database (691 techniques, loaded from /data/mitre-techniques.json) ──
+
+interface MitreTechniqueEntry {
+  id: string;
+  name: string;
+  tactic: string;
+  desc: string;
+}
+
+let _mitreDb: Map<string, MitreTechniqueEntry> | null = null;
+let _mitreLoading: Promise<void> | null = null;
+
+function ensureMitreDb(): Promise<void> {
+  if (_mitreDb) return Promise.resolve();
+  if (_mitreLoading) return _mitreLoading;
+  _mitreLoading = fetch('/data/mitre-techniques.json')
+    .then(r => r.json())
+    .then((entries: MitreTechniqueEntry[]) => {
+      _mitreDb = new Map(entries.map(e => [e.id, e]));
+    })
+    .catch(() => { _mitreDb = new Map(); });
+  return _mitreLoading;
+}
+
+// Kick off preload immediately on module init
+ensureMitreDb();
+
+function lookupMitreTechnique(tid: string): MitreTechniqueEntry | undefined {
+  return _mitreDb?.get(tid);
+}
+
 // ── Agent response generation ────────────────────────────────────
 
 async function generateAgentResponse(agent: GatraAgentDef, message: string): Promise<string> {
@@ -255,6 +346,14 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
   switch (agent.id) {
     // ── ADA: Anomaly Detection Agent ──────────────────────────────
     case 'ada': {
+      // Sigma scan: triggered by "sigma" keyword or pasted JSON with scan intent
+      const sigmaKeyword = /\bsigma\b/i.test(message);
+      const scanIntent = /\b(scan|match|detect)\s+(this|against|threats)/i.test(message);
+      const jsonEvent = tryExtractJson(message);
+      if (jsonEvent && (sigmaKeyword || scanIntent)) {
+        return runSigmaScan(jsonEvent);
+      }
+
       // IOC Lookup: if message contains a hash, IP, or URL, look it up live
       const iocMatch = extractIoC(message);
       if (iocMatch) {
@@ -401,7 +500,7 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
           `Detection methods currently active:\n` +
           `  \u2014 Behavioral sandbox: Suspicious files are detonated in an isolated environment. The Isolation Forest model scores behavioral anomalies \u2014 file system modifications, registry changes, network callbacks \u2014 to flag malicious intent even without known signatures.\n` +
           `  \u2014 LSTM sequence analysis: Monitors process creation chains and file I/O patterns over time. This catches multi-stage attacks where individual actions appear benign but the sequence reveals malicious intent (e.g., document \u2192 macro \u2192 PowerShell \u2192 download \u2192 execute).\n` +
-          `  \u2014 Signature matching: YARA rules (${Math.floor(Math.random() * 500 + 2000)} rules, updated ${Math.floor(Math.random() * 4 + 1)}h ago) and Snort/Suricata network signatures provide fast detection of known threats.\n` +
+          `  \u2014 Signature matching: YARA rules (${Math.floor(Math.random() * 500 + 2000)} rules, updated ${Math.floor(Math.random() * 4 + 1)}h ago), Sigma log detection (12 rules, asset-aware), and Snort/Suricata network signatures provide fast detection of known threats.\n` +
           `  \u2014 Heuristic/entropy analysis: Identifies packed, encrypted, or obfuscated payloads by measuring file entropy. High entropy sections in executables often indicate evasion techniques.\n\n` +
           (isRansomware
             ? `Ransomware-specific monitoring:\n` +
@@ -495,6 +594,73 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
 
     // ── TAA: Threat Analysis Agent ────────────────────────────────
     case 'taa': {
+      // ── MITRE technique with context — detect if asking about alerts vs definition ──
+      const techniqueMatch = message.match(/\bT(\d{4})(?:\.(\d{3}))?\b/i);
+      if (techniqueMatch) {
+        await ensureMitreDb();
+        const tid = `T${techniqueMatch[1]}${techniqueMatch[2] ? `.${techniqueMatch[2]}` : ''}`;
+        const info = lookupMitreTechnique(tid) ?? lookupMitreTechnique(`T${techniqueMatch[1]}`);
+        const activeHits = alerts.filter(a => a.mitreId === tid || a.mitreId.startsWith(`T${techniqueMatch[1]}`));
+
+        // Detect intent: asking about alerts/threats, or asking for definition?
+        const askingAboutAlerts = /\b(alert|threat|incident|new|any|active|recent|current|show|list|how\s*many|related|status|update|detect|trigger|fire|match|hit)\b/i.test(message);
+
+        if (askingAboutAlerts) {
+          // ── Alert-focused response ──
+          const techniqueName = info?.name ?? tid;
+          if (activeHits.length === 0) {
+            return `No active alerts matching ${tid} (${techniqueName}).\n` +
+              `\u2022 ${alerts.length} total alerts in session, none for this technique.\n` +
+              `\u2022 Type "what is ${tid}" for technique details.`;
+          }
+          const bySev = { critical: 0, high: 0, medium: 0, low: 0 };
+          for (const a of activeHits) bySev[a.severity as keyof typeof bySev] = (bySev[a.severity as keyof typeof bySev] || 0) + 1;
+          let response = `${activeHits.length} active alert(s) for ${tid} \u2014 ${techniqueName}:\n` +
+            `${'━'.repeat(40)}\n` +
+            `Severity: ${bySev.critical} CRIT / ${bySev.high} HIGH / ${bySev.medium} MED / ${bySev.low} LOW\n\n`;
+          for (const a of activeHits.slice(0, 10)) {
+            const ago = Math.round((Date.now() - a.timestamp.getTime()) / 60000);
+            response += `  ${a.id}  [${a.severity}]  ${a.confidence}%  ${ago}m ago`;
+            if (a.infrastructure) response += `  \u2022 ${a.infrastructure}`;
+            response += '\n';
+          }
+          if (activeHits.length > 10) response += `  ... and ${activeHits.length - 10} more\n`;
+          response += `\nActions: /escalate ${tid}  \u00B7  /investigate ${tid}  \u00B7  /dismiss ${tid}`;
+          return response;
+        }
+
+        // ── Definition-focused response ──
+        if (info) {
+          const subs: MitreTechniqueEntry[] = [];
+          if (!tid.includes('.') && _mitreDb) {
+            for (const [k, v] of _mitreDb) {
+              if (k.startsWith(tid + '.')) subs.push(v);
+            }
+          }
+          let response = `MITRE ATT&CK: ${info.id} \u2014 ${info.name}\n` +
+            `${'━'.repeat(40)}\n` +
+            `Tactic: ${info.tactic}\n\n` +
+            `${info.desc}`;
+          if (subs.length > 0) {
+            response += `\n\nSub-techniques (${subs.length}):\n` +
+              subs.slice(0, 10).map(s => `  ${s.id} \u2014 ${s.name}`).join('\n') +
+              (subs.length > 10 ? `\n  ... and ${subs.length - 10} more` : '');
+          }
+          if (activeHits.length > 0) {
+            response += `\n\n\u26A0\uFE0F Active alerts (${activeHits.length}) matching ${tid}:`;
+            for (const a of activeHits.slice(0, 8)) {
+              response += `\n  ${a.id}  [${a.severity}]  ${a.mitreName}  (${a.confidence}%)`;
+            }
+            if (activeHits.length > 8) response += `\n  ... and ${activeHits.length - 8} more`;
+            response += `\n\nActions: /escalate ${tid}  \u00B7  /investigate ${tid}  \u00B7  /dismiss ${tid}`;
+          }
+          response += `\n\nRef: https://attack.mitre.org/techniques/${tid.replace('.', '/')}/`;
+          return response;
+        }
+        return `${tid} not found in MITRE ATT&CK database (691 techniques loaded).\n` +
+          `Check: https://attack.mitre.org/techniques/${tid.replace('.', '/')}/`;
+      }
+
       // Why was it escalated / triaged
       if (/why.*(escalat|triag|prioriti)/i.test(message)) {
         const alert = alerts.find(a => a.severity === 'critical') ?? alerts[0];
@@ -525,17 +691,21 @@ async function generateAgentResponse(agent: GatraAgentDef, message: string): Pro
           `\u2022 Recommendation: ${sev.critical > 0 ? 'Immediate review of ESCALATE queue. CRA standby for containment.' : 'Standard posture. No immediate escalation needed.'}`;
       }
 
-      // MITRE mapping
-      if (/mitre|attack|technique|tactic|kill\s*chain/i.test(message)) {
+      // MITRE general mapping (no specific technique ID asked — technique IDs handled at top of TAA)
+      if (/mitre|att&?ck|technique|tactic|kill\s*chain/i.test(message)) {
         const byTechnique = dedupeByTechnique(alerts);
         const lines = [...byTechnique.values()].slice(0, 6).map(({ a, count }) =>
           `\u2022 ${a.mitreId} \u2013 ${a.mitreName} [${a.severity}]${count > 1 ? ` \u00D7${count}` : ''}`
         );
+        if (lines.length === 0) {
+          return `MITRE ATT&CK: No active alerts to map.\n` +
+            `Ask about a specific technique (e.g. "what is T1059") or type /status for agent overview.`;
+        }
         return `MITRE ATT&CK mapping (active session):\n` +
           lines.join('\n') +
           `\n\u2022 ${byTechnique.size} unique techniques across ${alerts.length} alerts\n` +
           `\u2022 Kill chain coverage: Initial Access \u2192 Execution \u2192 Persistence\n` +
-          `Ask about specific techniques or request full triage queue.`;
+          `Ask about specific techniques (e.g. T1059, T1566.001) for detailed info.`;
       }
 
       // APT / threat actor / nation-state / attribution (supports both numbered APTs and named groups)
@@ -1806,6 +1976,760 @@ function generateGeneralCyberResponse(message: string): string | null {
   return null; // Not a cybersecurity topic we can handle
 }
 
+// ── Response Gate (trust-gated response execution) ──────────────
+
+interface GateRequest {
+  id: string;
+  action: string;
+  target: string;
+  severity: string;
+  confidence: number;
+  reason: string;
+  timestamp: number;
+}
+
+interface GateDecisionLocal {
+  requestId: string;
+  action: string;
+  allowed: boolean;
+  reason: string;
+}
+
+/** In-browser response gate mirroring the Python ResponseGate logic.
+ *  Destructive actions (block, kill) are held for analyst /approve. */
+class ResponseGateClient {
+  private pending = new Map<string, GateRequest>();
+  private autoBlockEnabled = false;
+  private autoBlockMinSeverity = 4; // CRITICAL
+  private autoKillEnabled = false;
+
+  private static SEV_RANK: Record<string, number> = { low: 1, medium: 2, high: 3, critical: 4 };
+
+  evaluate(req: GateRequest): GateDecisionLocal {
+    const sev = ResponseGateClient.SEV_RANK[req.severity.toLowerCase()] ?? 1;
+
+    // Safe / reversal actions — always allowed
+    if (['notify', 'unblock', 'resume'].some(s => req.action.includes(s))) {
+      return { requestId: req.id, action: req.action, allowed: true, reason: `AUTO-APPROVED: safe action '${req.action}'` };
+    }
+
+    // Suspend — reversible, moderate threshold
+    if (req.action === 'suspend') {
+      if (sev >= 3 && req.confidence >= 0.80) {
+        return { requestId: req.id, action: req.action, allowed: true, reason: `AUTO-APPROVED: severity ${req.severity} + confidence ${req.confidence.toFixed(2)}` };
+      }
+      this.pending.set(req.id, req);
+      return { requestId: req.id, action: req.action, allowed: false, reason: `PENDING APPROVAL: below auto-suspend threshold` };
+    }
+
+    // Block IP
+    if (req.action === 'block') {
+      if (this.autoBlockEnabled && sev >= this.autoBlockMinSeverity && req.confidence >= 0.90) {
+        return { requestId: req.id, action: req.action, allowed: true, reason: `AUTO-APPROVED: auto-block policy met` };
+      }
+      this.pending.set(req.id, req);
+      return { requestId: req.id, action: req.action, allowed: false, reason: this.autoBlockEnabled ? `PENDING: severity/confidence below threshold` : `PENDING: auto-block disabled — analyst approval required` };
+    }
+
+    // Kill process — most destructive
+    if (req.action === 'kill') {
+      if (this.autoKillEnabled && sev >= 4 && req.confidence >= 0.95) {
+        return { requestId: req.id, action: req.action, allowed: true, reason: `AUTO-APPROVED: auto-kill policy met` };
+      }
+      this.pending.set(req.id, req);
+      return { requestId: req.id, action: req.action, allowed: false, reason: `PENDING: process kill requires analyst approval` };
+    }
+
+    // Isolate endpoint
+    if (req.action === 'isolate') {
+      this.pending.set(req.id, req);
+      return { requestId: req.id, action: req.action, allowed: false, reason: `PENDING: endpoint isolation requires analyst approval` };
+    }
+
+    // Unknown — hold
+    this.pending.set(req.id, req);
+    return { requestId: req.id, action: req.action, allowed: false, reason: `PENDING: unknown action '${req.action}' requires approval` };
+  }
+
+  getPending(): GateRequest[] { return [...this.pending.values()]; }
+
+  private resolveId(input: string): string | undefined {
+    const upper = input.toUpperCase();
+    for (const key of this.pending.keys()) {
+      if (key.toUpperCase() === upper) return key;
+    }
+    return undefined;
+  }
+
+  approve(requestId: string): GateRequest | null {
+    const key = this.resolveId(requestId);
+    if (!key) return null;
+    const req = this.pending.get(key)!;
+    this.pending.delete(key);
+    return req;
+  }
+
+  approveAll(): GateRequest[] {
+    const all = [...this.pending.values()];
+    this.pending.clear();
+    return all;
+  }
+
+  deny(requestId: string): boolean {
+    const key = this.resolveId(requestId);
+    if (!key) return false;
+    return this.pending.delete(key);
+  }
+
+  denyAll(): number {
+    const count = this.pending.size;
+    this.pending.clear();
+    return count;
+  }
+}
+
+const responseGate = new ResponseGateClient();
+let gateIdCounter = 0;
+function gateId(): string { return `G${(++gateIdCounter).toString().padStart(3, '0')}`; }
+
+// ── Backend relay — sends approved actions to gatra-local via /api/gatra-cra ──
+
+// Map action names to gatra-local API endpoints
+const CRA_ENDPOINT_MAP: Record<string, (target: string, opts: Record<string, unknown>) => { url: string; method: string }> = {
+  block: (t, o) => ({ url: `/api/cra/block?ip=${encodeURIComponent(t)}&reason=${encodeURIComponent(String(o.reason || 'SOC analyst'))}&severity=${encodeURIComponent(String(o.severity || 'high'))}&confidence=${o.confidence || 0.85}`, method: 'POST' }),
+  unblock: (t) => ({ url: `/api/cra/unblock?ip=${encodeURIComponent(t)}`, method: 'POST' }),
+  kill: (t, o) => ({ url: `/api/cra/kill?pid=${encodeURIComponent(t)}&reason=${encodeURIComponent(String(o.reason || 'SOC analyst'))}&severity=critical`, method: 'POST' }),
+  suspend: (t) => ({ url: `/api/cra/suspend?pid=${encodeURIComponent(t)}`, method: 'POST' }),
+  resume: (t) => ({ url: `/api/cra/resume?pid=${encodeURIComponent(t)}`, method: 'POST' }),
+  isolate: (t, o) => ({ url: `/api/cra/block?ip=${encodeURIComponent(t)}&reason=${encodeURIComponent('endpoint isolation: ' + String(o.reason || ''))}&severity=critical&confidence=0.95`, method: 'POST' }),
+};
+
+// gatra-local URL — default uses Vercel serverless Python function (no tunnel needed)
+// Override via: /set-backend http://127.0.0.1:8000 (for local backend)
+function getGatraLocalUrl(): string {
+  try {
+    return localStorage.getItem('gatra_local_url') || '';
+  } catch {
+    return '';
+  }
+}
+
+async function relayCraAction(
+  action: string,
+  target: string,
+  opts: { reason?: string; severity?: string; confidence?: number } = {},
+): Promise<{ success: boolean; detail: string; backend: boolean }> {
+  try {
+    const baseUrl = getGatraLocalUrl();
+    let res: Response;
+
+    if (!baseUrl) {
+      // Use Vercel serverless backend (default — no tunnel needed)
+      res = await fetch('/api/gatra-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, target, reason: opts.reason, severity: opts.severity, confidence: opts.confidence }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } else {
+      // Use custom backend (local or tunneled)
+      const mapper = CRA_ENDPOINT_MAP[action];
+      if (!mapper) {
+        return { success: false, detail: `No backend mapping for action '${action}'`, backend: false };
+      }
+      const route = mapper(target, opts);
+      res = await fetch(`${baseUrl}${route.url}`, {
+        method: route.method,
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '1' },
+        signal: AbortSignal.timeout(5000),
+      });
+    }
+    const data = await res.json();
+    if (data.executed === false && data.gate_id) {
+      return { success: true, detail: `Backend gate held: ${data.reason}`, backend: true };
+    }
+    return {
+      success: data.success !== false,
+      detail: data.executed ? `Executed on backend (${action} ${target})` : (data.error || 'Held by backend gate'),
+      backend: true,
+    };
+  } catch {
+    return { success: false, detail: 'Backend unreachable (simulated only)', backend: false };
+  }
+}
+
+// ── Analyst Memory (persists preferences, context, past incidents) ──
+
+interface AnalystMemory {
+  preferences: Record<string, string>;     // key-value prefs (e.g. "default_severity": "critical")
+  watchlist: string[];                      // techniques/IPs analyst is tracking
+  notes: Record<string, string>;            // alert_id/technique → analyst notes
+  recentEscalations: Array<{ target: string; timestamp: number }>;
+  recentBlocks: Array<{ ip: string; timestamp: number }>;
+  shiftLog: string[];                       // manual shift notes
+}
+
+const MEMORY_KEY = 'gatra_analyst_memory';
+
+function loadMemory(): AnalystMemory {
+  try {
+    const raw = localStorage.getItem(MEMORY_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return { preferences: {}, watchlist: [], notes: {}, recentEscalations: [], recentBlocks: [], shiftLog: [] };
+}
+
+function saveMemory(mem: AnalystMemory): void {
+  try {
+    localStorage.setItem(MEMORY_KEY, JSON.stringify(mem));
+  } catch {}
+}
+
+const analystMemory = loadMemory();
+
+// Auto-record escalations and blocks
+function recordEscalation(target: string): void {
+  analystMemory.recentEscalations.push({ target, timestamp: Date.now() });
+  if (analystMemory.recentEscalations.length > 50) analystMemory.recentEscalations = analystMemory.recentEscalations.slice(-50);
+  saveMemory(analystMemory);
+}
+
+function recordBlock(ip: string): void {
+  analystMemory.recentBlocks.push({ ip, timestamp: Date.now() });
+  if (analystMemory.recentBlocks.length > 50) analystMemory.recentBlocks = analystMemory.recentBlocks.slice(-50);
+  saveMemory(analystMemory);
+}
+
+// ── Natural language intent detection ────────────────────────────
+// Converts "escalate T1059", "block 10.0.0.1", etc. into slash commands
+// so analysts don't need to remember / syntax.
+
+interface DetectedIntent {
+  command: string;   // the slash command equivalent
+  target: string;    // extracted target (IP, technique, etc.)
+  original: string;  // what the user typed
+}
+
+function detectActionIntent(text: string): DetectedIntent | null {
+  const t = text.trim();
+  // Optional polite prefix stripped for matching
+  const stripped = t.replace(/^(?:please\s+|can\s+you\s+|could\s+you\s+|go\s+ahead\s+(?:and\s+)?|I\s+want\s+(?:to\s+)?|we\s+(?:need|should|must)\s+(?:to\s+)?|let'?s\s+|need\s+to\s+)/i, '');
+  let m: RegExpMatchArray | null;
+
+  // ── Block / unblock ──
+  m = stripped.match(/^block\s+(?:ip\s+|address\s+|this\s+ip\s*:?\s*)?(.+)/i);
+  if (m) return { command: 'block', target: m[1]!.trim(), original: t };
+  m = stripped.match(/^unblock\s+(.+)/i);
+  if (m) return { command: 'unblock', target: m[1]!.trim(), original: t };
+
+  // ── Contain / quarantine / mitigate / respond → escalate + block ──
+  m = stripped.match(/^(?:contain|quarantin(?:e|ing)|mitigat(?:e|ing)|respond\s+to|take\s+action\s+(?:on|against)|act\s+on|address)\s+(.+)/i);
+  if (m) return { command: 'escalate', target: m[1]!.trim(), original: t };
+
+  // ── Kill / terminate / stop process ──
+  m = stripped.match(/^(?:kill|terminate|stop|end)\s+(?:process\s+|pid\s+)?(.+)/i);
+  if (m) return { command: 'kill', target: m[1]!.trim(), original: t };
+
+  // ── Isolate / segment / disconnect ──
+  m = stripped.match(/^(?:isolat(?:e|ing)|segment|disconnect|cut\s+off)\s+(?:endpoint\s+|host\s+|server\s+|machine\s+|node\s+)?(.+)/i);
+  if (m) return { command: 'isolate', target: m[1]!.trim(), original: t };
+
+  // ── Escalate / prioritize / raise ──
+  m = stripped.match(/^(?:escalat(?:e|ing)|prioriti[zs](?:e|ing)|raise|bump|upgrade)\s+(?:alert\s+|all\s+|severity\s+(?:of|for)\s+)?(.+?)(?:\s+to\s+critical)?$/i);
+  if (m) return { command: 'escalate', target: m[1]!.trim(), original: t };
+
+  // ── Investigate / look into / dig into / analyze / triage ──
+  m = stripped.match(/^(?:investigat(?:e|ing)|look\s+into|dig\s+into|check\s+out|examine|analy[zs](?:e|ing)|triag(?:e|ing)|review)\s+(.+)/i);
+  if (m) return { command: 'investigate', target: m[1]!.trim(), original: t };
+
+  // ── Dismiss / close / suppress / ignore / drop ──
+  m = stripped.match(/^(?:dismiss|close|ignore|suppress|drop|clear)\s+(?:alert\s+)?(.+)/i);
+  if (m) return { command: 'dismiss', target: m[1]!.trim(), original: t };
+
+  // ── False positive ──
+  m = t.match(/(?:mark|flag|tag|set)\s+(.+?)\s+(?:as\s+)?(?:false\s*positive|fp|benign|safe|legitimate|whitelisted?)\s*$/i);
+  if (m) return { command: 'fp', target: m[1]!.trim(), original: t };
+  m = t.match(/^(.+?)\s+(?:is\s+(?:a\s+)?)?(?:false\s*positive|fp|benign|not\s+(?:a\s+)?threat)\s*$/i);
+  if (m && /^(?:T\d{4}|ALR-|CVE-)/i.test(m[1]!.trim())) return { command: 'fp', target: m[1]!.trim(), original: t };
+
+  // ── Approve / authorize / execute ──
+  if (/^app?r?o?ve?[\s-]?all\s*$/i.test(stripped)) return { command: 'approve-all', target: '', original: t };
+  m = stripped.match(/^(?:approve|authorize|execute|confirm|accept|permit)\s+(?:all|everything|pending)\s*$/i);
+  if (m) return { command: 'approve-all', target: '', original: t };
+  m = stripped.match(/^(?:approve|authorize|execute|confirm|accept|permit)\s+(.+)/i);
+  if (m) return { command: 'approve', target: m[1]!.trim(), original: t };
+  if (/^(?:do\s+it|go\s+ahead|proceed|yes\s+execute|confirmed?|approved?)\s*$/i.test(stripped)) {
+    if (responseGate.getPending().length > 0) return { command: 'approve-all', target: '', original: t };
+  }
+
+  // ── Deny / reject / cancel ──
+  if (/^deny[\s-]?all\s*$/i.test(stripped)) return { command: 'deny-all', target: '', original: t };
+  m = stripped.match(/^(?:deny|reject|cancel|abort|revoke|refuse)\s+(?:all|everything|pending)\s*$/i);
+  if (m) return { command: 'deny-all', target: '', original: t };
+  m = stripped.match(/^(?:deny|reject|cancel|abort|revoke|refuse)\s+(.+)/i);
+  if (m) return { command: 'deny', target: m[1]!.trim(), original: t };
+
+  // ── Hold / pause / freeze containment ──
+  m = stripped.match(/^(?:hold|pause|freeze|suspend)\s+(?:containment\s+(?:for|on)\s+|response\s+(?:for|on)\s+|action\s+(?:for|on)\s+)?(.+)/i);
+  if (m) return { command: 'hold', target: m[1]!.trim(), original: t };
+  m = stripped.match(/^(?:release|resume|unfreeze|unpause|re-?enable)\s+(?:containment\s+(?:for|on)\s+|response\s+(?:for|on)\s+)?(.+)/i);
+  if (m) return { command: 'release', target: m[1]!.trim(), original: t };
+
+  // ── Status / pending ──
+  if (/^(?:show\s+)?(?:status|agent\s*status|how\s*are\s*(?:the\s+)?agents|system\s*check)\s*\??$/i.test(stripped)) return { command: 'status', target: '', original: t };
+  if (/^(?:show\s+)?(?:pending|queue|what'?s?\s*(?:pending|queued|waiting|in\s*the\s*queue))\s*\??$/i.test(stripped)) return { command: 'pending', target: '', original: t };
+
+  // ── Report ──
+  if (/^(?:generate|create|write|give\s+me|produce|compile|build)\s+(?:a\s+|an?\s+)?(?:incident\s+)?report/i.test(stripped)) return { command: 'report', target: '', original: t };
+
+  return null;
+}
+
+// ── Alert target resolution (accepts alert ID, technique ID, or severity) ──
+
+function resolveAlertTarget(target: string, alerts: GatraAlert[]): GatraAlert[] {
+  const t = target.trim();
+
+  // Multiple IDs separated by spaces or commas (e.g. "ALR-abc ALR-def ALR-ghi")
+  const tokens = t.split(/[\s,]+/).filter(Boolean);
+  if (tokens.length > 1 && tokens.every(tok => /^ALR-/i.test(tok) || /^CVE-/i.test(tok) || /^INC-/i.test(tok))) {
+    const ids = new Set(tokens.map(tok => tok.toLowerCase()));
+    const matched = alerts.filter(a => ids.has(a.id.toLowerCase()));
+    if (matched.length > 0) return matched;
+  }
+
+  // Exact alert ID match (ALR-xxx, INC-xxx, or any ID)
+  const byId = alerts.filter(a => a.id.toLowerCase() === t.toLowerCase());
+  if (byId.length > 0) return byId;
+  // MITRE technique match (T1059, T1059.001)
+  const techRe = /^T\d{4}(?:\.\d{3})?$/i;
+  if (techRe.test(t)) {
+    const upper = t.toUpperCase();
+    return alerts.filter(a => a.mitreId === upper || a.mitreId.startsWith(upper + '.') || a.mitreId.startsWith(upper));
+  }
+  // Severity match (critical, high, medium, low)
+  if (/^(critical|high|medium|low)$/i.test(t)) {
+    return alerts.filter(a => a.severity.toLowerCase() === t.toLowerCase());
+  }
+  // Partial name match
+  const lower = t.toLowerCase();
+  return alerts.filter(a =>
+    a.mitreName.toLowerCase().includes(lower) ||
+    a.mitreId.toLowerCase().includes(lower) ||
+    a.id.toLowerCase().includes(lower)
+  );
+}
+
+// ── Backend approve helpers ─────────────────────────────────────
+
+async function approveOnBackend(action: string, target: string): Promise<void> {
+  const baseUrl = getGatraLocalUrl();
+  try {
+    let pendingRes: Response;
+    if (!baseUrl) {
+      pendingRes = await fetch('/api/gatra-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'pending' }),
+        signal: AbortSignal.timeout(3000),
+      });
+    } else {
+      pendingRes = await fetch(`${baseUrl}/api/gate/pending`, {
+        headers: { 'ngrok-skip-browser-warning': '1' },
+        signal: AbortSignal.timeout(3000),
+      });
+    }
+    const pendingData = await pendingRes.json();
+    const pending = pendingData.pending ?? pendingData;
+    // Find matching pending action on backend
+    const match = (pending as Array<{ id: string; action: string; target: string }>)
+      .find(p => p.target === target || p.action.includes(action));
+    if (match) {
+      let res: Response;
+      if (!baseUrl) {
+        res = await fetch('/api/gatra-local', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'approve', target: match.id, approved_by: 'analyst' }),
+          signal: AbortSignal.timeout(5000),
+        });
+      } else {
+        res = await fetch(`${baseUrl}/api/gate/approve/${match.id}?approved_by=analyst`, {
+          method: 'POST',
+          headers: { 'ngrok-skip-browser-warning': '1' },
+          signal: AbortSignal.timeout(5000),
+        });
+      }
+      const data = await res.json();
+      _postSystemMessage(data.approved
+        ? `\u2705 Backend: ${action} ${target} executed.`
+        : `\u26A0\uFE0F Backend: ${data.error || 'approval failed'}`);
+    } else {
+      // No matching pending — send direct action
+      const result = await relayCraAction(action, target);
+      _postSystemMessage(result.backend
+        ? (result.success ? `\u2705 Backend: ${action} ${target} executed.` : `\u26A0\uFE0F Backend: ${result.detail}`)
+        : `\u26A0\uFE0F ${result.detail}`);
+    }
+  } catch {
+    _postSystemMessage(`\u26A0\uFE0F Backend unreachable. Action simulated only.`);
+  }
+}
+
+async function approveAllOnBackend(): Promise<void> {
+  const baseUrl = getGatraLocalUrl();
+  try {
+    let res: Response;
+    if (!baseUrl) {
+      res = await fetch('/api/gatra-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve-all', approved_by: 'analyst' }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } else {
+      res = await fetch(`${baseUrl}/api/gate/approve-all?approved_by=analyst`, {
+        method: 'POST',
+        headers: { 'ngrok-skip-browser-warning': '1' },
+        signal: AbortSignal.timeout(5000),
+      });
+    }
+    const data = await res.json();
+    if (data.approved_count > 0) {
+      const results = (data.results as Array<{ action: string; target: string; success: boolean }>);
+      const lines = results.map(r => `  ${r.success ? '\u2705' : '\u26A0\uFE0F'} ${r.action} ${r.target}`);
+      _postSystemMessage(`Backend executed ${data.approved_count} action(s):\n${lines.join('\n')}`);
+    } else {
+      _postSystemMessage(`\u2705 Backend: no pending actions to approve.`);
+    }
+  } catch {
+    _postSystemMessage(`\u26A0\uFE0F Backend unreachable. Actions simulated only.`);
+  }
+}
+
+// ── System message callback (set by SocChatPanel on construction) ──
+let _postSystemMessage: (text: string) => void = () => {};
+
+// ── Incident Report Generator ─────────────────────────────────────
+
+function generateIncidentReport(
+  alerts: GatraAlert[],
+  actions: ReturnType<typeof getCRAActions>,
+): void {
+  const now = new Date();
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const reportId = `IR-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+  const analystId = 'SOC-ANALYST-01';
+
+  // ── Severity breakdown ──
+  const sevCounts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const a of alerts) sevCounts[a.severity] = (sevCounts[a.severity] ?? 0) + 1;
+  const maxSev = Math.max(...Object.values(sevCounts), 1);
+
+  // ── MITRE technique counts ──
+  const mitreCounts = new Map<string, { name: string; count: number }>();
+  for (const a of alerts) {
+    const entry = mitreCounts.get(a.mitreId);
+    if (entry) entry.count++;
+    else mitreCounts.set(a.mitreId, { name: a.mitreName, count: 1 });
+  }
+  const mitreSorted = [...mitreCounts.entries()].sort((a, b) => b[1].count - a[1].count);
+
+  // ── Time range ──
+  const timestamps = alerts.map(a => new Date(a.timestamp).getTime()).filter(t => !isNaN(t));
+  const earliest = timestamps.length ? new Date(Math.min(...timestamps)) : now;
+  const latest = timestamps.length ? new Date(Math.max(...timestamps)) : now;
+
+  // ── Timeline grouped by hour ──
+  const hourGroups = new Map<string, GatraAlert[]>();
+  for (const a of alerts) {
+    const d = new Date(a.timestamp);
+    const hourKey = `${pad2(d.getHours())}:00`;
+    const group = hourGroups.get(hourKey);
+    if (group) group.push(a);
+    else hourGroups.set(hourKey, [a]);
+  }
+  const hourKeys = [...hourGroups.keys()].sort();
+
+  // ── Top 20 alerts by severity ──
+  const sevOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  const topAlerts = [...alerts]
+    .sort((a, b) => (sevOrder[a.severity] ?? 4) - (sevOrder[b.severity] ?? 4))
+    .slice(0, 20);
+
+  // ── Response gate pending actions ──
+  const pendingActions = responseGate.getPending();
+
+  // ── Blocked IPs section ──
+  let blockedIpsHtml: string;
+  try {
+    const baseUrl = getGatraLocalUrl();
+    blockedIpsHtml = baseUrl
+      ? `<p style="color:#666">Backend URL configured (${baseUrl}). Check /status for current blocked IP count.</p>`
+      : '<p style="color:#666">No direct backend connection. Blocked IPs available via /status command.</p>';
+  } catch {
+    blockedIpsHtml = '<p style="color:#666">Backend unreachable.</p>';
+  }
+
+  // ── Recommendations ──
+  const recommendations: string[] = [];
+  const critCount = sevCounts.critical ?? 0;
+  const highCount = sevCounts.high ?? 0;
+  if (critCount > 0)
+    recommendations.push(`URGENT: ${critCount} critical alert(s) detected. Immediate escalation and containment recommended.`);
+  if (highCount > 5)
+    recommendations.push(`High-severity alert volume elevated (${highCount}). Consider activating additional SOC analysts.`);
+  if (mitreSorted.length > 0)
+    recommendations.push(`Top technique: ${mitreSorted[0]![1].name} (${mitreSorted[0]![0]}) with ${mitreSorted[0]![1].count} occurrence(s). Review detection rules for this technique.`);
+  if (pendingActions.length > 0)
+    recommendations.push(`${pendingActions.length} response action(s) pending approval. Review and approve/deny promptly.`);
+  if (critCount === 0 && highCount === 0)
+    recommendations.push('No critical or high severity alerts. Continue monitoring. Consider proactive threat hunting.');
+  if (alerts.length > 50)
+    recommendations.push(`High alert volume (${alerts.length}). Review tuning rules to reduce noise.`);
+  if (recommendations.length === 0)
+    recommendations.push('No specific recommendations at this time. Continue standard monitoring procedures.');
+
+  // ── Severity badge helper ──
+  const sevColor: Record<string, string> = { critical: '#ef4444', high: '#f97316', medium: '#eab308', low: '#3b82f6' };
+  const badge = (sev: string) =>
+    `<span style="background:${sevColor[sev] ?? '#666'};color:#fff;padding:2px 8px;border-radius:4px;font-size:0.8em;font-weight:600;text-transform:uppercase">${sev}</span>`;
+
+  // ── Escape for safe HTML embedding ──
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  // ── Build severity chart rows ──
+  const chartRows = (['critical', 'high', 'medium', 'low'] as const).map(sev => {
+    const count = sevCounts[sev] ?? 0;
+    const pct = maxSev > 0 ? (count / maxSev) * 100 : 0;
+    return `  <div class="chart-row">
+    <div class="chart-label" style="color:${sevColor[sev]}">${sev}</div>
+    <div class="chart-bar" style="width:${Math.max(pct, 2)}%;background:${sevColor[sev]}">${count > 0 ? count : ''}</div>
+    <div class="chart-count">${count} alert${count !== 1 ? 's' : ''}</div>
+  </div>`;
+  }).join('\n');
+
+  // ── Build timeline HTML ──
+  const timelineHtml = hourKeys.length === 0
+    ? '<p style="color:#666">No alerts to display.</p>'
+    : hourKeys.map(hour => {
+        const group = hourGroups.get(hour)!;
+        const entries = group.map(a =>
+          `<div class="timeline-entry">${badge(a.severity)} <strong>${esc(a.id)}</strong> ${esc(a.mitreId)} \u2014 ${esc(a.description.slice(0, 80))}${a.description.length > 80 ? '...' : ''} <span style="color:#666">[${a.agent}]</span></div>`
+        ).join('\n');
+        return `<div class="timeline-hour">${hour}</div>\n${entries}`;
+      }).join('\n');
+
+  // ── Build MITRE table ──
+  const mitreHtml = mitreSorted.length === 0
+    ? '<p style="color:#666">No MITRE techniques observed.</p>'
+    : `<table>
+  <thead><tr><th>Technique ID</th><th>Name</th><th>Count</th><th>Distribution</th></tr></thead>
+  <tbody>
+${mitreSorted.map(([id, v]) => {
+      const pct = (v.count / (mitreSorted[0]![1].count || 1)) * 100;
+      return `    <tr><td style="color:#4ade80">${esc(id)}</td><td>${esc(v.name)}</td><td>${v.count}</td><td><div style="background:#4ade80;height:12px;width:${Math.max(pct, 4)}%;border-radius:2px;opacity:0.7"></div></td></tr>`;
+    }).join('\n')}
+  </tbody>
+</table>`;
+
+  // ── Build top alerts table ──
+  const topAlertsHtml = topAlerts.length === 0
+    ? '<p style="color:#666">No alerts.</p>'
+    : `<table>
+  <thead><tr><th>ID</th><th>Severity</th><th>MITRE</th><th>Description</th><th>Confidence</th><th>Agent</th></tr></thead>
+  <tbody>
+${topAlerts.map(a =>
+      `    <tr><td>${esc(a.id)}</td><td>${badge(a.severity)}</td><td>${esc(a.mitreId)}</td><td>${esc(a.description.slice(0, 60))}${a.description.length > 60 ? '...' : ''}</td><td>${(a.confidence * 100).toFixed(0)}%</td><td>${a.agent}</td></tr>`
+    ).join('\n')}
+  </tbody>
+</table>`;
+
+  // ── Build response actions HTML ──
+  let actionsHtml: string;
+  if (actions.length === 0 && pendingActions.length === 0) {
+    actionsHtml = '<p style="color:#666">No response actions recorded in this session.</p>';
+  } else {
+    const gateItems = actions.slice(0, 30).map(a =>
+      `<div class="action-item"><strong>${esc(a.action)}</strong> ${esc(a.target ?? '')} <span style="color:#666">\u2014 ${esc(a.actionType)}</span> ${a.success ? '<span style="color:#4ade80">\u2713</span>' : '<span style="color:#ef4444">\u2717</span>'}</div>`
+    ).join('\n');
+    const overflow = actions.length > 30 ? `<p style="color:#666">... and ${actions.length - 30} more actions</p>` : '';
+    const pendingHtml = pendingActions.length > 0
+      ? `<h3>Pending Approval (${pendingActions.length})</h3>\n` +
+        pendingActions.map(p =>
+          `<div class="action-item" style="border-color:#f97316"><strong>${esc(p.action)}</strong> ${esc(p.target)} <span style="color:#f97316">\u23F3 awaiting approval</span></div>`
+        ).join('\n')
+      : '';
+    actionsHtml = `<h3>Gate Decisions (${actions.length} total)</h3>\n${gateItems}\n${overflow}\n${pendingHtml}`;
+  }
+
+  // ── Build recommendations HTML ──
+  const recsHtml = recommendations.map(r => `<div class="rec-item">${esc(r)}</div>`).join('\n');
+
+  // ── Top techniques summary line ──
+  const topTechLine = mitreSorted.length > 0
+    ? `<p style="margin-top:8px;color:#888">Top techniques: ${mitreSorted.slice(0, 5).map(([id, v]) => `${esc(id)} ${esc(v.name)} (${v.count})`).join(', ')}</p>`
+    : '';
+
+  // ── Full HTML document ──
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GATRA Incident Report \u2014 ${reportId}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d0d0d; color: #ccc;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px; line-height: 1.6; padding: 32px;
+  }
+  h1 { color: #fff; font-size: 1.6em; margin-bottom: 4px; }
+  h2 { color: #999; font-size: 1.1em; margin: 28px 0 12px; border-bottom: 1px solid #333; padding-bottom: 6px; }
+  h3 { color: #888; font-size: 0.95em; margin: 16px 0 8px; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; border-bottom: 2px solid #333; padding-bottom: 16px; }
+  .header-left { flex: 1; }
+  .logo-placeholder {
+    width: 80px; height: 80px; border: 2px solid #333; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    color: #555; font-size: 0.75em; text-align: center;
+  }
+  .meta { color: #666; font-size: 0.9em; margin-top: 8px; }
+  .meta span { margin-right: 20px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 12px 0; }
+  .summary-card {
+    background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 12px;
+  }
+  .summary-card .label { color: #666; font-size: 0.8em; text-transform: uppercase; }
+  .summary-card .value { color: #fff; font-size: 1.4em; font-weight: 700; margin-top: 4px; }
+  .chart-bar-container { margin: 8px 0; }
+  .chart-row { display: flex; align-items: center; margin: 6px 0; }
+  .chart-label { width: 70px; text-transform: uppercase; font-size: 0.8em; font-weight: 600; }
+  .chart-bar { height: 22px; border-radius: 3px; min-width: 2px; transition: width 0.3s; display: flex; align-items: center; padding-left: 8px; font-size: 0.8em; color: #fff; font-weight: 600; }
+  .chart-count { margin-left: 8px; color: #888; font-size: 0.85em; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+  th { text-align: left; color: #666; font-size: 0.8em; text-transform: uppercase; padding: 8px 10px; border-bottom: 2px solid #333; }
+  td { padding: 6px 10px; border-bottom: 1px solid #1f1f1f; font-size: 0.9em; }
+  tr:hover { background: #1a1a1a; }
+  .timeline-hour { color: #4ade80; font-weight: 700; margin-top: 12px; }
+  .timeline-entry { padding-left: 20px; border-left: 2px solid #333; margin-left: 12px; padding-top: 2px; padding-bottom: 2px; }
+  .action-item { background: #1a1a1a; border: 1px solid #333; border-radius: 4px; padding: 8px 12px; margin: 4px 0; }
+  .rec-item { background: #1a1a1a; border-left: 3px solid #f97316; padding: 10px 14px; margin: 6px 0; border-radius: 0 4px 4px 0; }
+  @media print {
+    body { background: #fff; color: #111; padding: 20px; font-size: 11px; }
+    h1 { color: #000; }
+    h2 { color: #333; border-bottom-color: #ccc; }
+    .summary-card { border-color: #ccc; background: #f9f9f9; }
+    .summary-card .value { color: #000; }
+    .chart-bar { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    .logo-placeholder { border-color: #ccc; }
+    td { border-bottom-color: #ddd; }
+    tr:hover { background: transparent; }
+    .action-item, .rec-item { background: #f9f9f9; border-color: #ccc; }
+    .rec-item { border-left-color: #f97316; }
+    .timeline-entry { border-left-color: #ccc; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-left">
+    <h1>GATRA Incident Report</h1>
+    <div class="meta">
+      <span>Report ID: <strong style="color:#fff">${reportId}</strong></span>
+      <span>Analyst: <strong style="color:#fff">${analystId}</strong></span>
+      <span>Generated: <strong style="color:#fff">${now.toISOString().replace('T', ' ').slice(0, 19)} UTC</strong></span>
+    </div>
+  </div>
+  <div class="logo-placeholder">GATRA<br>SOC</div>
+</div>
+
+<!-- 1. Executive Summary -->
+<h2>1. Executive Summary</h2>
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="label">Total Alerts</div>
+    <div class="value">${alerts.length}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Critical</div>
+    <div class="value" style="color:#ef4444">${sevCounts.critical}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">High</div>
+    <div class="value" style="color:#f97316">${sevCounts.high}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Medium</div>
+    <div class="value" style="color:#eab308">${sevCounts.medium}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Low</div>
+    <div class="value" style="color:#3b82f6">${sevCounts.low}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">MITRE Techniques</div>
+    <div class="value">${mitreCounts.size}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Time Range</div>
+    <div class="value" style="font-size:0.9em">${earliest.toLocaleTimeString()} \u2014 ${latest.toLocaleTimeString()}</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Response Actions</div>
+    <div class="value">${actions.length}</div>
+  </div>
+</div>
+${topTechLine}
+
+<!-- 2. Severity Chart -->
+<h2>2. Severity Distribution</h2>
+<div class="chart-bar-container">
+${chartRows}
+</div>
+
+<!-- 3. Timeline -->
+<h2>3. Alert Timeline</h2>
+${timelineHtml}
+
+<!-- 4. MITRE ATT&CK Coverage -->
+<h2>4. MITRE ATT&amp;CK Coverage</h2>
+${mitreHtml}
+
+<!-- 5. Top Alerts -->
+<h2>5. Top Alerts (by Severity)</h2>
+${topAlertsHtml}
+
+<!-- 6. Response Actions -->
+<h2>6. Response Actions</h2>
+${actionsHtml}
+
+<!-- 7. Blocked IPs -->
+<h2>7. Blocked IPs</h2>
+${blockedIpsHtml}
+
+<!-- 8. Recommendations -->
+<h2>8. Recommendations</h2>
+${recsHtml}
+
+<div style="margin-top:40px;padding-top:16px;border-top:1px solid #333;color:#555;font-size:0.8em">
+  GATRA SOC \u2014 Automated Incident Report \u2014 ${now.toISOString()} \u2014 Classification: INTERNAL
+</div>
+
+</body>
+</html>`;
+
+  // ── Open in new tab ──
+  const w = window.open('', '_blank');
+  if (w) {
+    w.document.write(html);
+    w.document.close();
+  }
+}
+
 // ── Slash commands ────────────────────────────────────────────────
 
 function processCommand(input: string): string | null {
@@ -1817,25 +2741,270 @@ function processCommand(input: string): string | null {
   const actions = getCRAActions();
 
   const handlers: Record<string, () => string> = {
-    'block': () => `CRA: Blocking ${args || '<target>'}. Firewall rule deploying.`,
-    'unblock': () => `CRA: Unblocking ${args || '<target>'}. Rule removed.`,
+    'block': () => {
+      const target = args || '<target>';
+      const req: GateRequest = { id: gateId(), action: 'block', target, severity: 'high', confidence: 0.85, reason: 'Analyst /block command', timestamp: Date.now() };
+      const decision = responseGate.evaluate(req);
+      recordBlock(target);
+      // Send to backend gate too (so approve-all can approve it there)
+      relayCraAction('block', target, { reason: 'Analyst /block command', severity: 'high', confidence: 0.85 })
+        .then(r => { if (r.backend) _postSystemMessage(`\u2705 Backend gate: ${r.detail}`); });
+      if (decision.allowed) return `CRA: \u2705 Blocking ${target}. Firewall rule deploying.`;
+      return `CRA: \u23F3 Block ${target} held for approval.\n\u2022 Reason: auto-block disabled\n\u2022 /approve ${req.id}  or  /approve-all`;
+    },
+    'unblock': () => {
+      const target = args || '<target>';
+      relayCraAction('unblock', target);
+      return `CRA: \u2705 Unblocking ${target}. Rule removed.`;
+    },
     'hold': () => `CRA: Containment held for ${args || '<target>'}. Manual approval required.`,
     'release': () => `CRA: Hold released for ${args || '<target>'}. Automatic response resumed.`,
-    'escalate': () => `TAA: Alert ${args || '<id>'} manually escalated to CRITICAL.`,
-    'dismiss': () => `TAA: Alert ${args || '<id>'} dismissed by analyst. Logged.`,
-    'investigate': () => `TAA: Alert ${args || '<id>'} moved to INVESTIGATE queue.`,
-    'fp': () => `ADA: Alert ${args || '<id>'} marked false positive. Model feedback queued.`,
-    'report': () => `CLA: Generating incident report... ${alerts.length} alerts, ${actions.length} actions.`,
+    'isolate': () => {
+      const target = args || '<endpoint>';
+      const req: GateRequest = { id: gateId(), action: 'isolate', target, severity: 'critical', confidence: 0.90, reason: 'Analyst /isolate command', timestamp: Date.now() };
+      const decision = responseGate.evaluate(req);
+      relayCraAction('isolate', target, { reason: 'Analyst /isolate command', severity: 'critical', confidence: 0.90 });
+      if (decision.allowed) return `CRA: \u2705 Isolating endpoint ${target}.`;
+      return `CRA: \u23F3 Isolate ${target} held for approval.\n\u2022 Reason: endpoint isolation requires confirmation\n\u2022 /approve ${req.id}  or  /approve-all`;
+    },
+    'kill': () => {
+      const target = args || '<pid>';
+      const req: GateRequest = { id: gateId(), action: 'kill', target, severity: 'critical', confidence: 0.90, reason: 'Analyst /kill command', timestamp: Date.now() };
+      const decision = responseGate.evaluate(req);
+      relayCraAction('kill', target, { reason: 'Analyst /kill command', severity: 'critical', confidence: 0.90 });
+      if (decision.allowed) return `CRA: \u2705 Terminating process ${target}.`;
+      return `CRA: \u23F3 Kill PID ${target} held for approval.\n\u2022 Reason: process kill requires confirmation\n\u2022 /approve ${req.id}  or  /approve-all`;
+    },
+    'approve': () => {
+      if (!args) {
+        const pending = responseGate.getPending();
+        if (pending.length === 0) return 'No pending actions.';
+        return `${pending.length} pending:\n` +
+          pending.map(p => `  ${p.id}  ${p.action} \u2192 ${p.target}  [${p.severity}]`).join('\n') +
+          `\n\n/approve <id>  or  /approve-all`;
+      }
+      const approved = responseGate.approve(args);
+      if (!approved) return `"${args}" not found. Type /pending to see queue.`;
+      // Approve on backend gate too, then execute
+      approveOnBackend(approved.action, approved.target);
+      return `CRA: \u2705 Approved \u2014 ${approved.action} ${approved.target} sending to backend...`;
+    },
+    'approve-all': () => {
+      const approved = responseGate.approveAll();
+      if (approved.length === 0) return 'No pending actions.';
+      // Approve all on backend
+      approveAllOnBackend();
+      return `CRA: \u2705 Approved ${approved.length} action(s):\n` +
+        approved.map(p => `  \u2022 ${p.action} ${p.target}`).join('\n') +
+        `\nSending to backend...`;
+    },
+    'deny': () => {
+      if (!args) return 'Usage: /deny <id>  or  /deny-all';
+      const denied = responseGate.deny(args);
+      if (!denied) return `"${args}" not found. Type /pending to see queue.`;
+      return `\u274C Denied \u2014 ${args} cancelled.`;
+    },
+    'deny-all': () => {
+      const count = responseGate.denyAll();
+      if (count === 0) return 'No pending actions.';
+      return `\u274C Denied ${count} action(s).`;
+    },
+    'pending': () => {
+      const pending = responseGate.getPending();
+      if (pending.length === 0) return 'No pending actions. All clear.';
+      return `${pending.length} pending:\n` +
+        pending.map(p =>
+          `  ${p.id}  ${p.action.toUpperCase()} \u2192 ${p.target}  [${p.severity}] ${(p.confidence * 100).toFixed(0)}%`
+        ).join('\n') +
+        `\n\n/approve <id>  \u00B7  /approve-all  \u00B7  /deny <id>  \u00B7  /deny-all`;
+    },
+    'set-backend': () => {
+      if (!args) return `Current backend: ${getGatraLocalUrl() || 'Vercel (cloud)'}\nUsage: /set-backend <url>  or  /set-backend default`;
+      try {
+        const input = args.trim().replace(/\/+$/, '');
+        if (input === 'default' || input === 'vercel' || input === 'cloud' || input === 'reset') {
+          localStorage.removeItem('gatra_local_url');
+          return `Backend reset to Vercel (cloud). No tunnel needed.\nTest with: /test-backend`;
+        }
+        localStorage.setItem('gatra_local_url', input);
+        return `Backend set to: ${input}\nTest with: /test-backend`;
+      } catch {
+        return 'Failed to save backend URL.';
+      }
+    },
+    'test-backend': () => {
+      const url = getGatraLocalUrl();
+      const label = url || 'Vercel (cloud)';
+      const fetchUrl = url ? `${url}/api/status` : '/api/gatra-local';
+      const fetchOpts: RequestInit = url
+        ? { headers: { 'ngrok-skip-browser-warning': '1' }, signal: AbortSignal.timeout(5000) }
+        : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status' }), signal: AbortSignal.timeout(5000) };
+      fetch(fetchUrl, fetchOpts)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(d => _postSystemMessage(
+          `\u2705 Backend connected: ${label}\n` +
+          `\u2022 Blocked: ${d.total_blocked ?? d.blocked_ips ?? 0} | Gate pending: ${d.gate_pending ?? 0}`
+        ))
+        .catch(err => _postSystemMessage(
+          url
+            ? `\u274C Backend unreachable: ${url}\n\u2022 Error: ${err.message}\n\u2022 Try: /set-backend default  to use Vercel cloud backend`
+            : `\u274C Vercel backend error: ${err.message}`
+        ));
+      return `Testing connection to ${label}...`;
+    },
+    'backend': () => {
+      return `Backend: ${getGatraLocalUrl()}\n` +
+        `Commands:\n` +
+        `  /set-backend <url>  \u2014 change backend URL\n` +
+        `  /test-backend       \u2014 test connection\n\n` +
+        `For HTTPS (soc.gatra.ai), use a tunnel:\n` +
+        `  ngrok http 8847\n` +
+        `  Then: /set-backend https://abc123.ngrok.io\n\n` +
+        `For HTTP (localhost:3000), default works directly.`;
+    },
+    // ── Memory commands ──
+    'watch': () => {
+      if (!args) {
+        if (analystMemory.watchlist.length === 0) return 'Watchlist empty. Usage: /watch T1059  or  /watch 10.0.0.1';
+        return `Watchlist (${analystMemory.watchlist.length}):\n` + analystMemory.watchlist.map(w => `  \u2022 ${w}`).join('\n') + `\n\n/unwatch <item> to remove`;
+      }
+      const item = args.trim();
+      if (!analystMemory.watchlist.includes(item)) {
+        analystMemory.watchlist.push(item);
+        saveMemory(analystMemory);
+      }
+      return `\u2705 Added "${item}" to watchlist. /watch to see all.`;
+    },
+    'unwatch': () => {
+      if (!args) return 'Usage: /unwatch <item>  or  /unwatch all';
+      if (args.trim().toLowerCase() === 'all') {
+        analystMemory.watchlist = [];
+        saveMemory(analystMemory);
+        return 'Watchlist cleared.';
+      }
+      const idx = analystMemory.watchlist.indexOf(args.trim());
+      if (idx >= 0) { analystMemory.watchlist.splice(idx, 1); saveMemory(analystMemory); }
+      return idx >= 0 ? `Removed "${args.trim()}" from watchlist.` : `"${args.trim()}" not in watchlist.`;
+    },
+    'note': () => {
+      if (!args) {
+        const entries = Object.entries(analystMemory.notes);
+        if (entries.length === 0) return 'No notes saved. Usage: /note T1059 Investigate after shift change';
+        return `Notes (${entries.length}):\n` + entries.map(([k, v]) => `  ${k}: ${v}`).join('\n');
+      }
+      const [key, ...rest] = args.split(' ');
+      if (!key || rest.length === 0) return 'Usage: /note <alert-or-technique> <your note>';
+      analystMemory.notes[key] = rest.join(' ');
+      saveMemory(analystMemory);
+      return `\u2705 Note saved for ${key}.`;
+    },
+    'shift-log': () => {
+      if (!args) {
+        if (analystMemory.shiftLog.length === 0) return 'Shift log empty. Usage: /shift-log Handed off T1059 investigation to night team';
+        return `Shift Log (${analystMemory.shiftLog.length}):\n` +
+          analystMemory.shiftLog.map((entry, i) => `  ${i + 1}. ${entry}`).join('\n');
+      }
+      const entry = `[${new Date().toISOString().slice(11, 19)}Z] ${args}`;
+      analystMemory.shiftLog.push(entry);
+      if (analystMemory.shiftLog.length > 100) analystMemory.shiftLog = analystMemory.shiftLog.slice(-100);
+      saveMemory(analystMemory);
+      return `\u2705 Shift log entry added.`;
+    },
+    'clear-shift-log': () => {
+      analystMemory.shiftLog = [];
+      saveMemory(analystMemory);
+      return 'Shift log cleared.';
+    },
+    'pref': () => {
+      if (!args) {
+        const entries = Object.entries(analystMemory.preferences);
+        if (entries.length === 0) return 'No preferences set. Usage: /pref default_severity critical';
+        return `Preferences:\n` + entries.map(([k, v]) => `  ${k} = ${v}`).join('\n');
+      }
+      const [key, ...rest] = args.split(' ');
+      if (!key || rest.length === 0) return 'Usage: /pref <key> <value>\nExamples:\n  /pref default_severity critical\n  /pref timezone UTC+7\n  /pref team blue-team-alpha';
+      analystMemory.preferences[key] = rest.join(' ');
+      saveMemory(analystMemory);
+      return `\u2705 Preference "${key}" set to "${rest.join(' ')}".`;
+    },
+    'memory': () => {
+      const esc = analystMemory.recentEscalations.length;
+      const blk = analystMemory.recentBlocks.length;
+      const watch = analystMemory.watchlist.length;
+      const notes = Object.keys(analystMemory.notes).length;
+      const prefs = Object.keys(analystMemory.preferences).length;
+      const shift = analystMemory.shiftLog.length;
+      return `Analyst Memory:\n` +
+        `  \u2022 Watchlist: ${watch} item(s)\n` +
+        `  \u2022 Notes: ${notes}\n` +
+        `  \u2022 Preferences: ${prefs}\n` +
+        `  \u2022 Shift log: ${shift} entries\n` +
+        `  \u2022 Escalations tracked: ${esc}\n` +
+        `  \u2022 Blocks tracked: ${blk}\n\n` +
+        `Commands: /watch  /unwatch  /note  /shift-log  /pref  /memory\n` +
+        `All data persists in your browser across sessions.`;
+    },
+    'escalate': () => {
+      if (!args) return 'Usage: /escalate <alert-id or technique>\nExamples: /escalate ALR-abc123  \u00B7  /escalate T1059';
+      const matched = resolveAlertTarget(args, alerts);
+      if (matched.length === 0) return `No alerts found matching "${args}".`;
+      recordEscalation(args);
+      return `TAA: \u2B06\uFE0F Escalated ${matched.length} alert(s) matching "${args}" to CRITICAL.\n` +
+        matched.slice(0, 5).map(a => `  ${a.id}  [${a.severity} \u2192 critical]  ${a.mitreId} \u2013 ${a.mitreName}`).join('\n') +
+        (matched.length > 5 ? `\n  ... and ${matched.length - 5} more` : '') +
+        `\nCRA on standby for containment.`;
+    },
+    'dismiss': () => {
+      if (!args) return 'Usage: /dismiss <alert-id or technique>';
+      const matched = resolveAlertTarget(args, alerts);
+      if (matched.length === 0) return `No alerts found matching "${args}".`;
+      return `TAA: Dismissed ${matched.length} alert(s) matching "${args}". Logged by CLA.\n` +
+        matched.slice(0, 5).map(a => `  ${a.id}  ${a.mitreId} \u2013 ${a.mitreName}`).join('\n') +
+        (matched.length > 5 ? `\n  ... and ${matched.length - 5} more` : '');
+    },
+    'investigate': () => {
+      if (!args) return 'Usage: /investigate <alert-id or technique>';
+      const matched = resolveAlertTarget(args, alerts);
+      if (matched.length === 0) return `No alerts found matching "${args}".`;
+      return `TAA: \uD83D\uDD0E ${matched.length} alert(s) matching "${args}" moved to INVESTIGATE queue.\n` +
+        matched.slice(0, 5).map(a => `  ${a.id}  [${a.severity}]  ${a.mitreId} \u2013 ${a.mitreName}`).join('\n') +
+        (matched.length > 5 ? `\n  ... and ${matched.length - 5} more` : '');
+    },
+    'fp': () => {
+      if (!args) return 'Usage: /fp <alert-id or technique>';
+      const matched = resolveAlertTarget(args, alerts);
+      if (matched.length === 0) return `No alerts found matching "${args}".`;
+      return `ADA: ${matched.length} alert(s) matching "${args}" marked false positive.\n` +
+        `\u2022 Suppressed for this source pattern\n` +
+        `\u2022 Model retrains with feedback in next cycle (T+15m)\n` +
+        matched.slice(0, 3).map(a => `  ${a.id}  ${a.mitreId}`).join('\n') +
+        (matched.length > 3 ? `\n  ... and ${matched.length - 3} more` : '');
+    },
+    'report': () => {
+      generateIncidentReport(alerts, actions);
+      return `CLA: Incident report generated — opened in new tab. ${alerts.length} alerts, ${actions.length} actions.`;
+    },
     'status': () => {
       const agentStatuses = getAgentStatus();
-      if (agentStatuses.length === 0) return 'All 5 GATRA agents online: ADA, TAA, CRA, CLA, RVA.';
-      return agentStatuses.map(a => `${a.name}: ${a.status}`).join(' | ');
+      const pendingCount = responseGate.getPending().length;
+      const base = agentStatuses.length === 0
+        ? 'All 5 GATRA agents online: ADA, TAA, CRA, CLA, RVA.'
+        : agentStatuses.map(a => `${a.name}: ${a.status}`).join(' | ');
+      return pendingCount > 0
+        ? `${base}\n\u26A0\uFE0F ${pendingCount} response action(s) pending approval. Type /pending to review.`
+        : base;
     },
     'help': () =>
       `Available commands:\n` +
-      `/block <ip> \u00B7 /unblock <ip> \u00B7 /hold <target> \u00B7 /release <target>\n` +
+      `/block <ip> \u00B7 /unblock <ip> \u00B7 /isolate <endpoint> \u00B7 /kill <pid>\n` +
+      `/hold <target> \u00B7 /release <target>\n` +
+      `/approve [id] \u00B7 /approve-all \u00B7 /deny <id> \u00B7 /deny-all \u00B7 /pending\n` +
       `/escalate <alert> \u00B7 /dismiss <alert> \u00B7 /investigate <alert>\n` +
       `/fp <alert> \u00B7 /report \u00B7 /status \u00B7 /help\n\n` +
+      `Response Gate:\n` +
+      `  Destructive actions (block, isolate, kill) require analyst approval.\n` +
+      `  Safe actions (notify, unblock, resume) execute immediately.\n` +
+      `  Use /pending to see queued actions, /approve-all to execute.\n\n` +
       `Playbooks:\n` +
       `/playbooks \u2014 list available playbooks\n` +
       `/hunt <name> \u2014 start a threat hunt playbook\n` +
@@ -1848,11 +3017,72 @@ function processCommand(input: string): string | null {
       `  malware \u00B7 phishing \u00B7 ransomware \u00B7 APT \u00B7 zero trust\n` +
       `  OWASP \u00B7 cloud security \u00B7 IoT/OT \u00B7 forensics \u00B7 DDoS\n` +
       `  MFA \u00B7 insider threat \u00B7 DevSecOps \u00B7 pentesting\n` +
-      `  encryption \u00B7 threat modeling \u00B7 supply chain \u00B7 SIEM`,
+      `  encryption \u00B7 threat modeling \u00B7 supply chain \u00B7 SIEM\n\n` +
+      `Analyst Memory (persists across sessions):\n` +
+      `/watch <item> \u00B7 /unwatch <item> \u00B7 /note <id> <text>\n` +
+      `/shift-log <entry> \u00B7 /pref <key> <value> \u00B7 /memory`,
   };
 
-  const handler = handlers[cmd];
+  // Command aliases — map common SOC verbs to canonical commands
+  const aliases: Record<string, string> = {
+    contain: 'escalate', quarantine: 'isolate', mitigate: 'escalate',
+    respond: 'escalate', triage: 'investigate', analyze: 'investigate',
+    review: 'investigate', examine: 'investigate', suppress: 'dismiss',
+    close: 'dismiss', ignore: 'dismiss', drop: 'dismiss', clear: 'dismiss',
+    terminate: 'kill', stop: 'kill', end: 'kill',
+    segment: 'isolate', disconnect: 'isolate',
+    authorize: 'approve', accept: 'approve', permit: 'approve', confirm: 'approve',
+    reject: 'deny', cancel: 'deny', abort: 'deny', revoke: 'deny',
+    pause: 'hold', freeze: 'hold', suspend: 'hold',
+    resume: 'release', unpause: 'release', unfreeze: 'release',
+    prioritize: 'escalate', raise: 'escalate', bump: 'escalate', upgrade: 'escalate',
+  };
+
+  // Typo correction — common misspellings
+  const typoFixes: Record<string, string> = {
+    apporve: 'approve', apprrove: 'approve', aprove: 'approve', approv: 'approve',
+    approveall: 'approve-all', 'apporve-all': 'approve-all', 'aprove-all': 'approve-all',
+    denyall: 'deny-all',
+    esclate: 'escalate', escaalte: 'escalate', escalte: 'escalate',
+    investiagte: 'investigate', investgate: 'investigate', invesitgate: 'investigate',
+    dimiss: 'dismiss', dismis: 'dismiss',
+    isolte: 'isolate', isloate: 'isolate',
+    blcok: 'block', bloack: 'block',
+    termiante: 'terminate', terminat: 'terminate',
+    contian: 'contain', containe: 'contain',
+    pening: 'pending', pendign: 'pending',
+  };
+
+  const fixed = typoFixes[cmd] ?? cmd;
+  const resolved = aliases[fixed] ?? fixed;
+  const handler = handlers[resolved];
   return handler ? handler() : `Unknown command: /${cmd}. Type /help for list.`;
+}
+
+// ── LLM action heuristic (should we call Groq?) ─────────────────
+// Returns true if the message MIGHT be an action but regex didn't catch it.
+// Conservative — avoids calling LLM for pure questions or greetings.
+
+function looksLikeAction(text: string): boolean {
+  const t = text.toLowerCase();
+  // Skip short messages, pure questions, greetings
+  if (t.length < 8) return false;
+  if (/^(hi|hello|hey|thanks|ok|yes|no|sure)\b/i.test(t)) return false;
+  // Skip messages that are clearly questions about concepts (not actions)
+  if (/^(what\s+is|what\s+are|how\s+does|how\s+do|explain|define|tell\s+me\s+about)\s+(?!.*(?:block|kill|isolat|escalat|dismiss|investigat|approv|deny|hold|releas))/i.test(t)) return false;
+
+  // Likely action signals: imperative verbs, references to prior context, targets
+  const actionSignals = [
+    /\b(do|handle|fix|stop|shut|take\s+care|deal\s+with|get\s+rid|remove|contain|respond|mitigat|remov)\b/i,
+    /\b(that|those|these|the\s+last|same|it|them|this\s+one|previous|above)\b.*\b(block|kill|isolat|escalat|dismiss|investigat|approv|deny|close|suppress|mark)\b/i,
+    /\b(block|kill|isolat|escalat|dismiss|investigat|approv|deny|close|suppress|mark)\b.*\b(that|those|these|the\s+last|same|it|them|this\s+one|previous|above)\b/i,
+    /\b(go\s+ahead|proceed|execute|do\s+it|make\s+it|run\s+it)\b/i,
+    /\b(all\s+critical|all\s+high|everything|the\s+rest)\b/i,
+    /\b(lateral\s+movement|powershell|credential|exfiltrat|brute\s*force|phishing|ransomware)\b.*\b(block|escalat|investigat|dismiss|contain)\b/i,
+    /\b(block|escalat|investigat|dismiss|contain)\b.*\b(lateral\s+movement|powershell|credential|exfiltrat|brute\s*force|phishing|ransomware)\b/i,
+  ];
+
+  return actionSignals.some(re => re.test(t));
 }
 
 // ── CSS ──────────────────────────────────────────────────────────
@@ -2174,8 +3404,51 @@ export class SocChatPanel {
     // Listen for GATRA events to post system messages
     this.setupEventListeners();
 
-    // Welcome message
-    this.addSystemMessage('SOC COMMS initialized. 5 GATRA agents online. Type /help for commands.');
+    // Register system message callback for async backend relay responses
+    _postSystemMessage = (text: string) => this.addSystemMessage(text);
+
+    // Welcome message + backend status
+    const backendUrl = getGatraLocalUrl();
+    this.addSystemMessage(
+      `SOC COMMS initialized. 5 GATRA agents online. Type /help for commands.` +
+      (backendUrl ? `\nBackend: ${backendUrl}` : '\nBackend: Vercel (cloud)')
+    );
+    // Auto-test backend on startup
+    const statusUrl = backendUrl ? `${backendUrl}/api/status` : '/api/gatra-local';
+    const statusOpts: RequestInit = backendUrl
+      ? { headers: { 'ngrok-skip-browser-warning': '1' }, signal: AbortSignal.timeout(3000) }
+      : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'status' }), signal: AbortSignal.timeout(3000) };
+    fetch(statusUrl, statusOpts)
+      .then(r => r.json())
+      .then(d => this.addSystemMessage(`\u2705 Backend connected: ${d.total_alerts ?? 0} alerts, ${d.total_blocked ?? d.blocked_ips ?? 0} blocked IPs`))
+      .catch(() => {});
+
+    // Show watchlist alerts on startup
+    if (analystMemory.watchlist.length > 0) {
+      setTimeout(() => {
+        const allAlerts = getAlerts();
+        const watchHits: string[] = [];
+        for (const item of analystMemory.watchlist) {
+          const count = allAlerts.filter(a =>
+            a.mitreId === item.toUpperCase() || a.id === item ||
+            a.mitreName.toLowerCase().includes(item.toLowerCase()) ||
+            a.description.toLowerCase().includes(item.toLowerCase())
+          ).length;
+          if (count > 0) watchHits.push(`  \u26A0\uFE0F ${item}: ${count} alert(s)`);
+        }
+        if (watchHits.length > 0) {
+          this.addSystemMessage(`Watchlist matches:\n${watchHits.join('\n')}`);
+        }
+      }, 3000);
+    }
+
+    // Show shift log if entries exist
+    if (analystMemory.shiftLog.length > 0) {
+      setTimeout(() => {
+        const recent = analystMemory.shiftLog.slice(-3);
+        this.addSystemMessage(`Last shift notes:\n${recent.map(e => `  \u2022 ${e}`).join('\n')}\nType /shift-log for full log.`);
+      }, 3500);
+    }
 
     // Bind PlaybookEngine callbacks
     this.playbookEngine.bind(
@@ -2230,7 +3503,7 @@ export class SocChatPanel {
     if (this.isOpen) {
       this.unreadCount = 0;
       this.updateBadge();
-      this.scrollToBottom();
+      this.scrollToTop();
       setTimeout(() => this.inputEl.focus(), 300);
     }
   }
@@ -2296,6 +3569,35 @@ export class SocChatPanel {
         sender: { id: 'system', name: 'SYSTEM', type: 'system', color: '#888' },
         type: 'command_response', content: cmdResponse,
       });
+      return;
+    }
+
+    // ── Natural language action detection (regex first, LLM fallback) ──
+    const intent = detectActionIntent(text);
+    if (intent) {
+      this.addMessage({
+        id: uid(), timestamp: Date.now(), sender: this.analystSender,
+        type: 'text', content: text,
+      });
+      const cmdText = intent.target ? `/${intent.command} ${intent.target}` : `/${intent.command}`;
+      const result = processCommand(cmdText);
+      if (result) {
+        this.addMessage({
+          id: uid(), timestamp: Date.now(),
+          sender: { id: 'system', name: 'SYSTEM', type: 'system', color: '#888' },
+          type: 'command_response', content: result,
+        });
+        return;
+      }
+    }
+
+    // ── LLM fallback for ambiguous action messages ──
+    if (!intent && looksLikeAction(text)) {
+      this.addMessage({
+        id: uid(), timestamp: Date.now(), sender: this.analystSender,
+        type: 'text', content: text,
+      });
+      this.classifyWithLLM(text);
       return;
     }
 
@@ -2542,6 +3844,64 @@ export class SocChatPanel {
     }
   }
 
+  // ── LLM-based intent classification (Groq fallback) ─────────
+
+  private async classifyWithLLM(text: string): Promise<void> {
+    // Show thinking indicator
+    const thinkId = 'soc-llm-thinking';
+    const thinkEl = document.createElement('div');
+    thinkEl.className = 'soc-typing';
+    thinkEl.id = thinkId;
+    thinkEl.innerHTML = `<span style="color:#f59e0b;">GATRA</span> <span class="soc-typing-dots"><span></span><span></span><span></span></span>`;
+    this.msgsEl.prepend(thinkEl);
+
+    try {
+      // Build context from recent alerts and pending gate actions
+      const recentAlerts = getAlerts().slice(0, 5).map(a => `${a.id} ${a.mitreId} ${a.mitreName} [${a.severity}]`);
+      const pending = responseGate.getPending().map(p => `${p.id} ${p.action} ${p.target}`);
+
+      const res = await fetch('/api/soc-intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          context: { alerts: recentAlerts, pending },
+        }),
+      });
+
+      document.getElementById(thinkId)?.remove();
+
+      if (!res.ok) {
+        // LLM failed — fall through to agent routing
+        this.routeToAgents(text);
+        return;
+      }
+
+      const data = await res.json();
+
+      // Only act if confidence is high enough
+      if (data.command && data.confidence >= 0.7) {
+        const cmdText = data.target ? `/${data.command} ${data.target}` : `/${data.command}`;
+        const result = processCommand(cmdText);
+        if (result) {
+          this.addMessage({
+            id: uid(), timestamp: Date.now(),
+            sender: { id: 'system', name: 'SYSTEM', type: 'system', color: '#888' },
+            type: 'command_response', content: result,
+          });
+          return;
+        }
+      }
+
+      // LLM didn't find an action — route to agents as normal
+      this.routeToAgents(text);
+    } catch {
+      document.getElementById(thinkId)?.remove();
+      // Network error — fall through to agents
+      this.routeToAgents(text);
+    }
+  }
+
   private showTyping(agent: GatraAgentDef): void {
     const el = document.createElement('div');
     el.className = 'soc-typing';
@@ -2551,7 +3911,7 @@ export class SocChatPanel {
       <span class="soc-typing-dots"><span></span><span></span><span></span></span>
     `;
     this.msgsEl.appendChild(el);
-    this.scrollToBottom();
+    this.scrollToTop();
   }
 
   private hideTyping(agentId: string): void {
@@ -2675,12 +4035,7 @@ export class SocChatPanel {
   // ── System messages from events ────────────────────────────────
 
   private setupEventListeners(): void {
-    window.addEventListener('gatra-early-warning-update', ((e: CustomEvent) => {
-      const { multiplier, activeMarkets } = e.detail as { multiplier: number; activeMarkets: number };
-      if (multiplier > 1.2) {
-        this.addSystemMessage(`Predictive Signals: Early warning elevated to \u00D7${multiplier.toFixed(1)}. ${activeMarkets} market(s) signaling.`);
-      }
-    }) as EventListener);
+    // Predictive Signals removed — not relevant for SOC Cyber variant
 
     window.addEventListener('gatra-cii-update', ((e: CustomEvent) => {
       const { country, ciiScore, delta, isActive } = e.detail as { country: string; ciiScore: number; delta: number; isActive: boolean };
@@ -2716,7 +4071,9 @@ export class SocChatPanel {
     let html = '';
     let lastDate = '';
 
-    for (const msg of this.messages) {
+    // Newest messages first — iterate in reverse
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i]!;
       const date = fmtDate(msg.timestamp);
       if (date !== lastDate) {
         html += `<div class="soc-chat-date">\u2500\u2500 ${escapeHtml(date)} \u2500\u2500</div>`;
@@ -2790,8 +4147,8 @@ export class SocChatPanel {
         </div>`;
     }
 
-    // Check if user is near the bottom before replacing content
-    const wasNearBottom = this.msgsEl.scrollHeight - this.msgsEl.scrollTop - this.msgsEl.clientHeight < 80;
+    // Check if user is near the top before replacing content
+    const wasNearTop = this.msgsEl.scrollTop < 80;
 
     this.msgsEl.innerHTML = html;
 
@@ -2805,13 +4162,13 @@ export class SocChatPanel {
       });
     }
 
-    // Only auto-scroll if user was already at the bottom
-    if (wasNearBottom) this.scrollToBottom();
+    // New messages are at top — scroll to top so newest is visible
+    if (wasNearTop) this.scrollToTop();
   }
 
-  private scrollToBottom(): void {
+  private scrollToTop(): void {
     requestAnimationFrame(() => {
-      this.msgsEl.scrollTop = this.msgsEl.scrollHeight;
+      this.msgsEl.scrollTop = 0;
     });
   }
 
